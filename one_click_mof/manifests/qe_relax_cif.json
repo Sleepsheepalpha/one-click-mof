@@ -1,0 +1,196 @@
+{
+  "id": "qe_relax_cif",
+  "name": "QE 局部弛豫（固定骨架）",
+  "category": "DFT",
+  "description": "从 CIF 生成 relax 输入，固定骨架，只放开尾部 movable_atoms 个原子（CH4=5）。用于吸附位点局部弛豫。",
+  "accepts": [
+    ".cif"
+  ],
+  "params": [
+    {
+      "key": "np",
+      "label": "MPI 进程数",
+      "type": "int",
+      "default": 6,
+      "min": 1,
+      "max": 64,
+      "help": "MPI 进程数。111–118 原子常用 6。"
+    },
+    {
+      "key": "npool",
+      "label": "k 点池",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 16,
+      "help": "k 点池。Gamma 点通常填 1。"
+    },
+    {
+      "key": "ecutwfc",
+      "label": "ecutwfc (Ry)",
+      "type": "float",
+      "default": 50,
+      "min": 20,
+      "max": 120,
+      "help": "波函数截断。要和同体系单点保持一致。"
+    },
+    {
+      "key": "ecutrho",
+      "label": "ecutrho (Ry)",
+      "type": "float",
+      "default": 400,
+      "min": 160,
+      "max": 960,
+      "help": "电荷密度截断。要和同体系单点保持一致。"
+    },
+    {
+      "key": "degauss",
+      "label": "degauss (Ry)",
+      "type": "float",
+      "default": 0.02,
+      "min": 0.001,
+      "max": 0.1,
+      "help": "展宽。要和同体系单点保持一致。"
+    },
+    {
+      "key": "conv_thr",
+      "label": "SCF 收敛阈值",
+      "type": "float",
+      "default": 0.0001,
+      "min": 1e-08,
+      "max": 0.01,
+      "help": "每一步 SCF 的收敛阈值。"
+    },
+    {
+      "key": "nstep",
+      "label": "最大离子步",
+      "type": "int",
+      "default": 50,
+      "min": 1,
+      "max": 500,
+      "help": "最多走多少个离子步。到上限会返回 rc=3，不等于崩溃。"
+    },
+    {
+      "key": "movable_atoms",
+      "label": "可动原子数",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 200,
+      "help": "尾部放开几个原子：CH4=5、C2H6=8、C6H6=12、CO2=3。"
+    },
+    {
+      "key": "forc_conv_thr",
+      "label": "力收敛阈值 (Ry/au)",
+      "type": "float",
+      "default": 0.001,
+      "min": 1e-05,
+      "max": 0.1,
+      "help": "太松会假收敛；收紧后要看最终最大受力，不只看 bfgs converged。"
+    },
+    {
+      "key": "nspin",
+      "label": "nspin",
+      "type": "select",
+      "default": "1",
+      "options": [
+        "1",
+        "2"
+      ],
+      "help": "自旋。Zn/Mg/Zr 填 1。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/make_qe_input.py",
+        "--cif",
+        "{input}",
+        "--out",
+        "{workdir}/mof.in",
+        "--mode",
+        "relax",
+        "--fix-framework",
+        "--movable-atoms",
+        "{movable_atoms}",
+        "--forc-conv-thr",
+        "{forc_conv_thr}",
+        "--nstep",
+        "{nstep}",
+        "--nspin",
+        "{nspin}",
+        "--ecutwfc",
+        "{ecutwfc}",
+        "--ecutrho",
+        "{ecutrho}",
+        "--degauss",
+        "{degauss}",
+        "--conv-thr",
+        "{conv_thr}",
+        "--pseudo-dir",
+        "{pseudo_dir}",
+        "--outdir",
+        "./tmp",
+        "--prefix",
+        "mof"
+      ]
+    },
+    {
+      "cmd": [
+        "{mpiexec}",
+        "-np",
+        "{np}",
+        "{pw}",
+        "-nk",
+        "{npool}",
+        "-in",
+        "{workdir}/mof.in"
+      ],
+      "stdout": "{workdir}/qe.out"
+    }
+  ],
+  "outputs": [
+    "mof.in",
+    "qe.out"
+  ],
+  "parser": "qe",
+  "details": {
+    "what": "在单点基础上让指定的原子动起来，找局部能量更低的位置。这里默认固定骨架，只放开尾部 movable_atoms 个原子（CH4 是 5 个），适合回答“这个位点到底能束缚多强”。",
+    "how": [
+      "生成 relax 输入，给骨架原子加 0 0 0、给客体分子加 1 1 1。",
+      "pw.x 用 BFGS 走离子步，直到力小于 forc_conv_thr 或达到 nstep。",
+      "解析 Final energy、bfgs converged、n_bfgs_steps 和最终力。"
+    ],
+    "params": {
+      "np": "MPI 进程数。111–118 原子常用 6。",
+      "npool": "k 点池。Gamma 点通常填 1。",
+      "ecutwfc": "波函数截断。要和同体系单点保持一致。",
+      "ecutrho": "电荷密度截断。要和同体系单点保持一致。",
+      "degauss": "展宽。要和同体系单点保持一致。",
+      "conv_thr": "每一步 SCF 的收敛阈值。",
+      "nstep": "最多走多少个离子步。到上限会返回 rc=3，不等于崩溃。",
+      "nspin": "自旋。Zn/Mg/Zr 填 1。",
+      "forc_conv_thr": "relax 的力收敛阈值（Ry/au）。太松会出现“假收敛”，例如 forc_conv_thr=0.05 时 1 个 SCF、0 个 BFGS 就结束。"
+    },
+    "example": "基准算例：CH4_site20（111 原子）放开 5 个 CH4 原子，nstep=20、forc_conv_thr=0.01；3 个 BFGS 步收敛，最终最大受力 0.0047 Ry/au，总耗时约 1 h。C2H6/C6H6 同样放开 8/12 个原子。",
+    "warnings": [
+      "必须看最终最大可动原子受力，不要只看 bfgs converged 字样。",
+      "nstep 到上限返回 rc=3 很常见；先看 JOB DONE 和最终力，再决定是否续跑。",
+      "固定骨架只适合局部弛豫；骨架明显要动时，这个结果不能当全局最优。",
+      "movable_atoms 要与分子原子数一致；填成默认 3 会把 CH4 的 2 个 H 冻住。"
+    ]
+  },
+  "order": 50,
+  "estimate": {
+    "kind": "qe_relax",
+    "reference": "6 MPI / 16GB RAM；111 原子约 10–12 分钟/离子步，按 nstep 上限估",
+    "atoms_ref": 111,
+    "minutes_ref": 12,
+    "steps_ref": 1,
+    "disk_mb_ref": 1500,
+    "scaling": 2,
+    "checkpoint_supported": true
+  },
+  "output_note": "每个离子步都在 tmp/ 里写波函数，111 原子约 0.5 GB；建议放 /Data；开启保存点会保留 tmp，占用更大。"
+}

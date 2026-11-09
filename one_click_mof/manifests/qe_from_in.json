@@ -1,0 +1,77 @@
+{
+  "id": "qe_from_in",
+  "name": "QE 运行已有输入",
+  "category": "DFT",
+  "description": "直接运行你已有的 pw.x 输入文件。输入里的 pseudo_dir、outdir 等保持原样；工作目录会复制一份输入。",
+  "accepts": [
+    ".in",
+    ".pwi"
+  ],
+  "params": [
+    {
+      "key": "np",
+      "label": "MPI 进程数",
+      "type": "int",
+      "default": 6,
+      "min": 1,
+      "max": 64,
+      "help": "MPI 进程数。按输入体系大小设置。"
+    },
+    {
+      "key": "npool",
+      "label": "k 点池",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 16,
+      "help": "k 点池。Gamma 点通常填 1。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{mpiexec}",
+        "-np",
+        "{np}",
+        "{pw}",
+        "-nk",
+        "{npool}",
+        "-in",
+        "{input}"
+      ],
+      "stdout": "{workdir}/qe.out"
+    }
+  ],
+  "outputs": [
+    "qe.out"
+  ],
+  "parser": "qe",
+  "details": {
+    "what": "不生成输入，直接运行你已有的 pw.x 输入文件。适合你已经手改过 .in，或者想复用以前的 bare/complex 输入。",
+    "how": [
+      "把 .in 复制到任务目录的 input/。",
+      "用 mpiexec 启动 pw.x，输出写到 qe.out。",
+      "解析能量、收敛和 JOB DONE。"
+    ],
+    "params": {
+      "np": "MPI 进程数。按输入体系大小设置。",
+      "npool": "k 点池。Gamma 点通常填 1。"
+    },
+    "example": "基准算例：把 CH4_site03 的 mof.in 直接跑，或复用 bare/complex 的手改输入。注意输入里的 pseudo_dir 若是相对路径，复制到任务目录后可能指向别处。",
+    "warnings": [
+      "输入文件里的 pseudo_dir / outdir 如果是相对路径，复制到任务目录后可能找不到。",
+      "这个工具不检查 bare/complex 设置是否一致；一致性要你自己在输入里保证。"
+    ]
+  },
+  "order": 60,
+  "estimate": {
+    "kind": "qe_from_in",
+    "reference": "6 MPI / 16GB RAM；111 原子单点约 40 分钟；relax 看输入里的 nstep",
+    "atoms_ref": 111,
+    "minutes_ref": 40,
+    "disk_mb_ref": 1500,
+    "scaling": 2.5,
+    "checkpoint_supported": true
+  },
+  "output_note": "取决于输入：111 原子单点 tmp/ 约 0.5 GB，relax 类似；建议放 /Data。"
+}

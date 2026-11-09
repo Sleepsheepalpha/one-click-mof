@@ -1,0 +1,51 @@
+{
+  "id": "structure_check",
+  "name": "结构体检（ASE）",
+  "category": "结构",
+  "description": "读 CIF，报告原子数、化学式、体积、密度、最短距离、短接触和金属-氧配位数。不修改结构。",
+  "accepts": [
+    ".cif"
+  ],
+  "params": [],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/one_click_mof/tools/structure_check.py",
+        "--cif",
+        "{input}",
+        "--out",
+        "{workdir}/structure_check.json"
+      ]
+    }
+  ],
+  "outputs": [
+    "structure_check.json"
+  ],
+  "parser": "structure_check",
+  "details": {
+    "what": "结构体检不判断材料“好不好”，只把 CIF 里的关键数字摊开：原子数、化学式、体积、密度、最短距离、短接触、金属-氧配位数。MOF-5 原胞应为 106 原子、0.593 g/cm³、Zn 的 O 配位数 4；先确认这些数字对，再谈吸附能。",
+    "how": [
+      "用 ASE 读入 CIF，保留周期边界。",
+      "计算最短原子间距，并找出比 0.8×(共价半径和) 还短的接触。",
+      "按元素统计金属-氧配位数（Zn/Mg 2.6 Å，Zr 2.8 Å 截断）。",
+      "结果写到 structure_check.json，并在结果页变成可筛选的指标。"
+    ],
+    "params": {},
+    "example": "基准算例：IRMOF-1_primitive.cif → 106 原子、C48H24O26Zn8、V=4309.37 Å³、ρ=0.593 g/cm³、Zn–O 配位数 4、0 个短接触。再把 CH4_site03.cif（111 原子，多 5 个 CH4）跑一遍，密度和 Zn 配位数应基本不变；变了说明 CIF 或元素识别有问题。",
+    "warnings": [
+      "短接触是提示，不一定是错误；预测结构里 0.9–1.2 Å 的 C–H 接触要结合元素判断。",
+      "这个工具不替代 BVS/价态分析；报告里仍要人工检查金属价态。"
+    ]
+  },
+  "order": 10,
+  "estimate": {
+    "kind": "structure",
+    "reference": "任意 16GB 内存机器；106 原子约 1 秒",
+    "atoms_ref": 106,
+    "minutes_ref": 0.02,
+    "disk_mb_ref": 5,
+    "checkpoint_supported": false
+  },
+  "output_note": "只写一份 structure_check.json，通常不到 1 MB；默认目录即可。"
+}

@@ -1,0 +1,119 @@
+{
+  "id": "mace_screen",
+  "name": "MACE 位点筛选（任意分子）",
+  "category": "MLIP",
+  "description": "用 uMOF-MH 在孔道里撒点、放入所选分子、局域优化并排序。只用于找位点，不能替代 DFT 能量。",
+  "accepts": [
+    ".cif"
+  ],
+  "params": [
+    {
+      "key": "adsorbate",
+      "label": "吸附分子",
+      "type": "select",
+      "default": "CH4",
+      "options": [
+        "CH4",
+        "C2H6",
+        "C6H6",
+        "CO2",
+        "custom"
+      ],
+      "help": "内置分子来自 ASE build.molecule；custom 需在下一行填 XYZ 路径。"
+    },
+    {
+      "key": "adsorbate_file",
+      "label": "自定义 XYZ 路径",
+      "type": "string",
+      "default": "",
+      "help": "仅 custom 或想覆盖内置分子时填；建议绝对路径，例如 /home/.../mol.xyz。"
+    },
+    {
+      "key": "n_sites",
+      "label": "候选位点数",
+      "type": "int",
+      "default": 24,
+      "min": 1,
+      "max": 200,
+      "help": "候选起点数量。越大越慢；常用 24–32。"
+    },
+    {
+      "key": "seed",
+      "label": "随机种子",
+      "type": "int",
+      "default": 20261024,
+      "help": "固定它，换机器也能复现同一批起点。"
+    },
+    {
+      "key": "device",
+      "label": "计算设备",
+      "type": "select",
+      "default": "cuda",
+      "options": [
+        "cuda",
+        "cpu"
+      ],
+      "help": "cuda 用 GPU，快；cpu 在没显卡或显存不足时用，但慢很多。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/one_click_mof/tools/screen_adsorbate_mace.py",
+        "--cif",
+        "{input}",
+        "--adsorbate",
+        "{adsorbate}",
+        "--adsorbate-file",
+        "{adsorbate_file}",
+        "--out",
+        "{workdir}/screen",
+        "--n-sites",
+        "{n_sites}",
+        "--seed",
+        "{seed}",
+        "--device",
+        "{device}"
+      ]
+    }
+  ],
+  "outputs": [
+    "screen/screen.csv",
+    "screen/best.cif"
+  ],
+  "parser": "mace_screen",
+  "details": {
+    "what": "MACE 是机器学习势，秒级给出能量和力。它在这里只负责在孔道里找可能位点，不负责最终吸附能。DFT 仍然是定能量的那一步；MOF-5 + CH4 的单点约 0.7 s（RTX 4060），所以可以撒很多起点。",
+    "how": [
+      "在孔道内按 1.2 Å 间距撒点，去掉离骨架小于 2.2 Å 的点。",
+      "每个起点放入所选分子（内置 CH4/C2H6/C6H6/CO2，或自定义 XYZ），随机取向。",
+      "固定骨架和分子内部键长，做 BFGS 局域优化。",
+      "丢弃分子变形/解离的位点，按 E_ads 排序，输出 screen.csv 和 best.cif。"
+    ],
+    "params": {
+      "adsorbate": "内置分子来自 ASE；custom 时用下一行的 XYZ。",
+      "adsorbate_file": "仅 custom 或想覆盖内置分子时填；绝对路径。",
+      "n_sites": "候选起点数量。越大越慢；常用 24–32。",
+      "seed": "随机种子。固定它，换机器也能复现同一批起点。",
+      "device": "cuda 用 GPU，快；cpu 在没显卡或显存不足时用，但慢很多。"
+    },
+    "example": "基准算例：MOF-5 + CH4，24 个起点全部 intact；最好的 site 3 MACE E_ads = −0.188 eV，最差的接近 0（−0.0004 eV）。106+5 原子单点约 0.7 s，24 个位点约半分钟。换成 C2H6/C6H6 只是分子变大，流程不变。",
+    "warnings": [
+      "MACE 排名不能直接当 DFT 排名；差 0.1–0.3 eV 很常见。",
+      "自定义分子的元素必须在模型覆盖范围内；不在训练集里时先做 DFT 标定。",
+      "MACE 比 −0.8 eV 还强时，先怀疑位点重叠或模型外推；CH4 在 MOF-5 里通常只有 −0.1 ~ −0.3 eV。"
+    ]
+  },
+  "order": 20,
+  "estimate": {
+    "kind": "mace",
+    "reference": "RTX 4060 / 16GB RAM；111 原子、24 个位点约 30 秒",
+    "atoms_ref": 111,
+    "minutes_ref": 0.5,
+    "sites_ref": 24,
+    "disk_mb_ref": 100,
+    "checkpoint_supported": false
+  },
+  "output_note": "写 screen.csv、每个位点的 CIF 和 best.cif，通常几十 MB；默认目录即可。"
+}

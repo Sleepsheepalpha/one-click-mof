@@ -1,0 +1,204 @@
+{
+  "id": "cif_to_qe",
+  "name": "结构转 QE 输入（转换器）",
+  "category": "转换",
+  "description": "把 CIF / XYZ / POSCAR 转成 pw.x 能读的 .in 文件。只生成输入，不运行 DFT；relax 模式可固定骨架，只放开尾部指定数目的原子（CH4 是 5 个）。",
+  "accepts": [
+    ".cif",
+    ".xyz",
+    ".vasp",
+    ".poscar"
+  ],
+  "params": [
+    {
+      "key": "mode",
+      "label": "模式",
+      "type": "select",
+      "default": "scf",
+      "options": [
+        "scf",
+        "relax"
+      ],
+      "help": "scf 只算单点；relax 让原子移动。"
+    },
+    {
+      "key": "fix_framework",
+      "label": "固定骨架（仅 relax）",
+      "type": "bool",
+      "default": true,
+      "help": "仅 relax：固定骨架，只放开尾部 movable_atoms 个原子。"
+    },
+    {
+      "key": "movable_atoms",
+      "label": "可动原子数（仅 relax）",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 200,
+      "help": "尾部放开几个原子：CH4=5、C2H6=8、C6H6=12、CO2=3。"
+    },
+    {
+      "key": "primitive",
+      "label": "约化成原胞",
+      "type": "bool",
+      "default": false,
+      "help": "用 spglib 约化；会改变原子数和能量参考。"
+    },
+    {
+      "key": "unwrap_co2",
+      "label": "把 CO2 移回 C 旁边（仅 CO2）",
+      "type": "bool",
+      "default": false,
+      "help": "仅 CO2：避免客体跨晶胞边界；CH4/C2H6/C6H6 不要开。"
+    },
+    {
+      "key": "ecutwfc",
+      "label": "ecutwfc (Ry)",
+      "type": "float",
+      "default": 50,
+      "min": 20,
+      "max": 120,
+      "help": "波函数截断，生产常用 50 Ry。"
+    },
+    {
+      "key": "ecutrho",
+      "label": "ecutrho (Ry)",
+      "type": "float",
+      "default": 400,
+      "min": 160,
+      "max": 960,
+      "help": "电荷密度截断，50/400 配套。"
+    },
+    {
+      "key": "degauss",
+      "label": "degauss (Ry)",
+      "type": "float",
+      "default": 0.02,
+      "min": 0.001,
+      "max": 0.1,
+      "help": "展宽，生产常用 0.02 Ry。"
+    },
+    {
+      "key": "conv_thr",
+      "label": "SCF 收敛阈值",
+      "type": "float",
+      "default": 0.0001,
+      "min": 1e-08,
+      "max": 0.01,
+      "help": "大体系常用 1e-4。"
+    },
+    {
+      "key": "nspin",
+      "label": "nspin",
+      "type": "select",
+      "default": "1",
+      "options": [
+        "1",
+        "2"
+      ],
+      "help": "Zn/Mg/Zr 闭壳层填 1。"
+    },
+    {
+      "key": "nstep",
+      "label": "最大离子步（relax）",
+      "type": "int",
+      "default": 50,
+      "min": 1,
+      "max": 500,
+      "help": "到上限会返回 rc=3，不等于崩溃。"
+    },
+    {
+      "key": "forc_conv_thr",
+      "label": "力收敛阈值 (Ry/au)",
+      "type": "float",
+      "default": 0.001,
+      "min": 1e-05,
+      "max": 0.1,
+      "help": "太松会假收敛；至少检查最终最大受力。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/trans.py",
+        "{input}",
+        "--out",
+        "{workdir}/mof.in",
+        "--mode",
+        "{mode}",
+        "--fix-framework",
+        "{fix_framework}",
+        "--movable-atoms",
+        "{movable_atoms}",
+        "--primitive",
+        "{primitive}",
+        "--unwrap-co2",
+        "{unwrap_co2}",
+        "--ecutwfc",
+        "{ecutwfc}",
+        "--ecutrho",
+        "{ecutrho}",
+        "--degauss",
+        "{degauss}",
+        "--conv-thr",
+        "{conv_thr}",
+        "--forc-conv-thr",
+        "{forc_conv_thr}",
+        "--nstep",
+        "{nstep}",
+        "--nspin",
+        "{nspin}",
+        "--pseudo-dir",
+        "{pseudo_dir}",
+        "--info-json",
+        "{workdir}/convert_info.json"
+      ]
+    }
+  ],
+  "outputs": [
+    "mof.in",
+    "convert_info.json"
+  ],
+  "parser": "convert",
+  "details": {
+    "what": "转换器只做一件事：把 CIF/XYZ/POSCAR 等结构变成 pw.x 能读的 .in 文件。它不跑 DFT，适合先检查输入、手改参数，或把结构交给“QE 运行已有输入”。",
+    "how": [
+      "用 ASE 读结构；可选 spglib 约化成原胞。",
+      "按当前赝势库生成 &CONTROL、&SYSTEM、&ELECTRONS、ATOMIC_SPECIES、CELL_PARAMETERS、ATOMIC_POSITIONS。",
+      "scf 模式写单点输入；relax 模式加 &IONS，并按 movable_atoms 给尾部原子写 1 1 1、其余写 0 0 0。",
+      "同时写 convert_info.json，记录原子数、模式、可动原子数、截断和阈值。"
+    ],
+    "params": {
+      "mode": "scf 只算单点；relax 让原子移动。",
+      "fix_framework": "仅 relax 有效：固定骨架，只放开尾部 movable_atoms 个原子。",
+      "movable_atoms": "尾部可动原子数：CH4=5、C2H6=8、C6H6=12、CO2=3。填错会把骨架放开或把分子冻住。",
+      "primitive": "用 spglib 约化成原胞。会改变原子数和能量参考，不能和惯用胞结果直接混用。",
+      "unwrap_co2": "仅 CO2 用：把最后两个 O 移到 C 旁边，避免跨晶胞边界。CH4/C2H6/C6H6 不要开。",
+      "ecutwfc": "波函数截断，生产常用 50 Ry。",
+      "ecutrho": "电荷密度截断，50/400 配套。",
+      "degauss": "展宽，生产常用 0.02 Ry。",
+      "conv_thr": "SCF 收敛阈值。",
+      "nspin": "Zn/Mg/Zr 闭壳层填 1。",
+      "nstep": "relax 最大离子步；scf 模式忽略。",
+      "forc_conv_thr": "relax 的力收敛阈值（Ry/au）。太松会出现“假收敛”。"
+    },
+    "example": "把 CH4_site03.cif（111 原子：106 骨架 + 5 个 CH4）转成 relax 输入：mode=relax、fix_framework=on、movable_atoms=5。生成的 mof.in 里 106 个骨架原子带 0 0 0，CH4 的 5 个原子带 1 1 1；nstep=20、forc_conv_thr=0.01。",
+    "warnings": [
+      "转换器只写输入，不检查赝势文件是否真的存在；运行前先确认 pseudo_dir。",
+      "primitive 会改变晶胞和能量参考；同一组 bare/complex 不要一个用原胞、一个用惯用胞。",
+      "movable_atoms 必须等于分子原子数：CH4=5、C2H6=8、C6H6=12、CO2=3。",
+      "relax 的力阈值太松会假收敛；至少检查最终最大受力。"
+    ]
+  },
+  "order": 30,
+  "estimate": {
+    "kind": "converter",
+    "reference": "任意 16GB 内存机器；111 原子 CH4 复合物约 5 秒",
+    "atoms_ref": 111,
+    "minutes_ref": 0.1,
+    "disk_mb_ref": 10,
+    "checkpoint_supported": false
+  },
+  "output_note": "只写 mof.in 和 convert_info.json，通常几 MB；默认目录即可。"
+}

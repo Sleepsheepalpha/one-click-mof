@@ -1,0 +1,88 @@
+{
+  "id": "md_analyze",
+  "name": "MD 分析（MSD/D/RDF）",
+  "category": "分析",
+  "description": "读取某个 MD 目录（需有 traj.xyz 和 summary.json），计算 MSD、扩散系数、客体完整性、RDF 和骨架稳定性。请选择 traj.xyz。",
+  "accepts": [
+    ".xyz"
+  ],
+  "params": [
+    {
+      "key": "dt_ps",
+      "label": "帧间隔 (ps)",
+      "type": "float",
+      "default": 0.1,
+      "min": 0.001,
+      "max": 10,
+      "help": "轨迹相邻两帧的时间间隔，单位 ps。必须和 MD 输出一致；50 ps / 500 帧 = 0.1 ps。"
+    },
+    {
+      "key": "fit_lo",
+      "label": "拟合起点 (ps)",
+      "type": "float",
+      "default": 5,
+      "help": "MSD 拟合起点，单位 ps。避开初始平衡段，常用 5 ps。"
+    },
+    {
+      "key": "fit_hi",
+      "label": "拟合终点 (ps)",
+      "type": "float",
+      "default": 45,
+      "help": "MSD 拟合终点，单位 ps。常用 45 ps。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/analyze_md.py",
+        "--dir",
+        "{source_dir}",
+        "--out",
+        "{workdir}/md",
+        "--dt-ps",
+        "{dt_ps}",
+        "--fit-lo",
+        "{fit_lo}",
+        "--fit-hi",
+        "{fit_hi}"
+      ]
+    }
+  ],
+  "outputs": [
+    "md/analysis.json",
+    "md/msd.png",
+    "md/rdf.png"
+  ],
+  "parser": "md",
+  "details": {
+    "what": "读一段 NVT MD 轨迹，回答“CH4 是扩散还是只在原地跳”“骨架有没有散架”。输出 MSD、D、R²、客体完整性、RDF 和配位数。",
+    "how": [
+      "读取同目录的 traj.xyz 和 summary.json（n_guest / guest_natoms）。",
+      "用 unwrapped 坐标算 MSD，在 fit_lo–fit_hi 区间线性拟合 D。",
+      "统计客体内部距离相对第 0 帧的最大偏差（判断是否解离）、客体-骨架最近距离、RDF。",
+      "输出 analysis.json、msd.csv、timeseries.csv、rdf.csv 和几张图。"
+    ],
+    "params": {
+      "dt_ps": "轨迹相邻两帧的时间间隔，单位 ps。必须和 MD 输出一致；50 ps / 500 帧 = 0.1 ps。",
+      "fit_lo": "MSD 拟合起点，单位 ps。避开初始平衡段，常用 5 ps。",
+      "fit_hi": "MSD 拟合终点，单位 ps。常用 45 ps。"
+    },
+    "example": "基准算例：MOF-5 + 5 原子 CH4，summary.json 写 {\"n_guest\": 5, \"guest_natoms\": 5}；50 ps、500 帧、dt_ps=0.1。看三件事：MSD 在拟合区间是否接近直线、guest_intact_frac 是否接近 1、骨架位移是否远小于 0.5 Å。",
+    "warnings": [
+      "R² 很低时不要硬报一个 D；先看 MSD 是否平台化。",
+      "guest_natoms 填错会把一个分子拆成几个，MSD 和完整性都不对。",
+      "dt_ps 填错会把 D 整体放大/缩小，先核对帧间隔。"
+    ]
+  },
+  "order": 70,
+  "estimate": {
+    "kind": "md",
+    "reference": "任意 16GB 内存机器；111 原子、50 ps 约 1 分钟",
+    "atoms_ref": 111,
+    "minutes_ref": 1,
+    "disk_mb_ref": 50,
+    "checkpoint_supported": false
+  },
+  "output_note": "写 analysis.json、csv 和几张 png，通常几十 MB；默认目录即可。"
+}

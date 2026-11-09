@@ -1,0 +1,27 @@
+{
+  "natoms": 106,
+  "formula": "C48H24O26Zn8",
+  "composition": {
+    "C": 48,
+    "H": 24,
+    "O": 26,
+    "Zn": 8
+  },
+  "volume_A3": 4309.373,
+  "density_g_cm3": 0.5933,
+  "min_distance_A": 0.927,
+  "n_short_contacts": 0,
+  "short_contacts": [],
+  "metal_counts": {
+    "Zn": 8
+  },
+  "metal_oxygen_cn": {
+    "Zn": {
+      "mean": 4.0,
+      "min": 4,
+      "max": 4,
+      "n": 8
+    }
+  },
+  "n_uncoordinated_O": 0
+}

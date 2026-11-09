@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>One-Click MOF</title>
+  <script>
+    (function () {
+      var allowed = ['simple-day', 'simple-night', 'dynamic-day', 'dynamic-night'];
+      var skin = 'simple-night';
+      try {
+        var saved = localStorage.getItem('mofui.skin');
+        if (allowed.indexOf(saved) >= 0) skin = saved;
+      } catch (e) {}
+      document.documentElement.dataset.skin = skin;
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<canvas id="ambient-canvas" aria-hidden="true"></canvas>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">M</div>
+      <div>
+        <div class="brand-title">One-Click MOF</div>
+        <div class="brand-sub">local workbench</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-view="projects"><span>01</span> 项目与文件</button>
+      <button class="nav-item" data-view="tools"><span>02</span> 工具与参数</button>
+      <button class="nav-item" data-view="runs"><span>03</span> 运行队列</button>
+      <button class="nav-item" data-view="results"><span>04</span> 结果与筛选</button>
+      <button class="nav-item" data-view="tutorial"><span>05</span> 教程</button>
+      <button class="nav-item" data-view="settings"><span>06</span> 路径设置</button>
+    </nav>
+    <div class="skin-picker">
+      <button type="button" class="skin-toggle" id="skin-toggle" aria-expanded="false">
+        <span class="skin-swatch" id="skin-swatch"></span>
+        <span class="skin-toggle-text"><b>皮肤</b><span id="skin-current">简约 · 夜晚</span></span>
+        <span class="skin-caret">▴</span>
+      </button>
+      <div class="skin-menu hidden" id="skin-menu">
+        <div class="skin-menu-title">选择皮肤</div>
+        <div class="skin-grid">
+          <button type="button" class="skin-option" data-skin="simple-day">
+            <span class="skin-thumb skin-thumb-simple-day"><i></i><b></b></span>
+            <span class="skin-label">简约 · 白天</span>
+          </button>
+          <button type="button" class="skin-option" data-skin="simple-night">
+            <span class="skin-thumb skin-thumb-simple-night"><i></i><b></b></span>
+            <span class="skin-label">简约 · 夜晚</span>
+          </button>
+          <button type="button" class="skin-option" data-skin="dynamic-day">
+            <span class="skin-thumb skin-thumb-dynamic-day"><i></i><b></b><u></u></span>
+            <span class="skin-label">动态 · 白天</span>
+          </button>
+          <button type="button" class="skin-option" data-skin="dynamic-night">
+            <span class="skin-thumb skin-thumb-dynamic-night"><i></i><b></b><u></u></span>
+            <span class="skin-label">动态 · 夜晚</span>
+          </button>
+        </div>
+        <div class="skin-hint">默认：简约 · 夜晚。动态皮肤会消耗少量 GPU。</div>
+      </div>
+    </div>
+    <div class="side-foot">
+      <div class="dot" id="server-dot"></div>
+      <span id="server-text">连接中</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="page-title">项目与文件</h1>
+        <p id="page-sub">选择一个输入目录，扫描 CIF，然后把文件交给工具。</p>
+      </div>
+      <div class="top-actions">
+        <button class="btn ghost" id="refresh-all">刷新</button>
+        <span class="pill" id="project-pill">未选择项目</span>
+      </div>
+    </header>
+
+    <!-- 项目 -->
+    <section class="view active" id="view-projects">
+      <div class="first-run">
+        <div class="first-run-badge">新手</div>
+        <div class="first-run-text"><b>第一次用？</b> 先到「路径设置」确认 Python、pw.x、赝势目录；回来选输入目录。扫描只是列文件，不会自动跑计算。</div>
+        <button class="btn small" data-jump="settings">去设置</button>
+      </div>
+      <div class="grid two">
+        <div class="card">
+          <div class="card-head">
+            <h2>打开输入目录</h2>
+            <span class="hint">目录里可以有子文件夹</span>
+          </div>
+          <form id="project-form" class="form-row">
+            <label>项目名<input id="project-name" placeholder="例如 MOF-5 + CH4" required></label>
+            <label class="grow">输入目录
+              <div class="path-row">
+                <input id="project-dir" placeholder="/home/sleep-sheep/.../cifs" required>
+                <button type="button" class="btn pick" data-pick-kind="dir" data-pick-target="project-dir" data-pick-title="选择输入目录">浏览…</button>
+              </div>
+            </label>
+            <button class="btn primary" type="submit">建立项目</button>
+          </form>
+          <div id="projects-list" class="project-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>这个工具台做什么</h2>
+            <span class="hint">不替代终端，只替代重复敲命令</span>
+          </div>
+          <div class="flow">
+            <div class="flow-step"><b>1</b><span>选输入目录</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step"><b>2</b><span>扫描结构</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step"><b>3</b><span>选工具/改参数</span></div>
+            <div class="flow-arrow">→</div>
+            <div class="flow-step"><b>4</b><span>看日志/结果</span></div>
+          </div>
+          <p class="muted">工具由 <code>manifests/*.json</code> 声明；每个任务在独立目录里运行，原始输入不会被覆盖。</p>
+          <div class="notice">
+            <b>安全边界</b>：服务只绑定 <code>127.0.0.1</code>，不提供任意 shell 输入框；所有命令来自工具清单。
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="files-card">
+        <div class="card-head">
+          <div>
+            <h2>文件</h2>
+            <span class="hint" id="files-hint">先建立或选择项目</span>
+          </div>
+          <div class="toolbar">
+            <label class="check"><input type="checkbox" id="recursive" checked> 递归扫描</label>
+            <button class="btn ghost" id="scan-btn" disabled>扫描目录</button>
+            <select id="tool-select" class="select" disabled></select>
+            <button class="btn ghost" id="tool-params-btn" disabled>工具参数</button>
+            <button class="btn primary" id="run-selected" disabled>加入队列</button>
+          </div>
+        </div>
+        <div id="tool-params" class="params-panel hidden"></div>
+        <div id="tool-help" class="tool-help"></div>
+        <div id="estimate-bar" class="estimate-bar"></div>
+        <div class="table-wrap">
+          <table class="table" id="files-table">
+            <thead>
+              <tr>
+                <th class="w-check"><input type="checkbox" id="check-all"></th>
+                <th>文件</th>
+                <th>原子/化学式</th>
+                <th>大小</th>
+                <th>预估</th>
+                <th>最近任务</th>
+                <th class="w-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody><tr><td colspan="7" class="empty">还没有文件。建立项目后点“扫描目录”。</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 工具 -->
+    <section class="view" id="view-tools">
+      <div class="section-intro">
+        <h2>工具清单</h2>
+        <p>每个工具默认收起，点标题展开参数。这里的默认值会保存在浏览器里，下次打开仍然有效。</p>
+      </div>
+      <div id="tools-grid" class="tools-grid"></div>
+    </section>
+
+    <!-- 运行 -->
+    <section class="view" id="view-runs">
+      <div class="section-intro">
+        <h2>运行队列</h2>
+        <p>单机默认串行执行，避免几个 QE 同时抢内存。默认保留完整日志和目录；可在任务行或“结果与筛选”里删除记录。</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>任务</h2>
+          <div class="toolbar">
+            <span class="hint" id="runs-hint">自动刷新中</span>
+            <button class="btn small danger" id="delete-selected-jobs" disabled>删除选中</button>
+            <button class="btn primary" id="start-queue" disabled>启动队列</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table" id="jobs-table">
+            <thead>
+              <tr><th class="w-check"><input type="checkbox" id="check-all-jobs" title="全选可删除任务"></th><th>#</th><th>文件</th><th>工具</th><th>状态</th><th>开始</th><th>关键结果</th><th class="w-actions">操作</th></tr>
+            </thead>
+            <tbody><tr><td colspan="8" class="empty">还没有任务。</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 结果 -->
+    <section class="view" id="view-results">
+      <div class="section-intro">
+        <h2>结果与筛选</h2>
+        <p>筛选只改变显示和导出。点击表头可排序；每行可看日志或删除记录，并在同一个弹窗里选择是否清理缓存/输出。</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>指标表</h2>
+          <div class="toolbar">
+            <select id="filter-key" class="select"></select>
+            <select id="filter-op" class="select">
+              <option value="lt">&lt;</option>
+              <option value="le">≤</option>
+              <option value="gt">&gt;</option>
+              <option value="ge">≥</option>
+              <option value="eq">=</option>
+              <option value="contains">包含</option>
+            </select>
+            <input id="filter-value" class="input slim" placeholder="数值/文本">
+            <button class="btn ghost" id="apply-filter">应用</button>
+            <button class="btn ghost" id="clear-filter">清除</button>
+            <button class="btn small danger" id="delete-selected-results" disabled>删除选中</button>
+            <button class="btn" id="export-csv">导出 CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap tall">
+          <table class="table" id="results-table">
+            <thead><tr><th class="w-check"><input type="checkbox" id="check-all-results" title="全选可删除记录"></th><th>任务</th><th>文件</th><th>工具</th><th>状态</th><th>指标</th><th class="w-actions">操作</th></tr></thead>
+            <tbody><tr><td colspan="7" class="empty">还没有完成的任务。</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 教程 -->
+    <section class="view" id="view-tutorial">
+      <div class="card tutorial-card">
+        <div class="tutorial-toolbar">
+          <select id="tutorial-select" class="select"></select>
+        </div>
+        <div class="tutorial-body" id="tutorial-body">加载教程…</div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view" id="view-settings">
+      <div class="section-intro">
+        <h2>路径设置</h2>
+        <p>每个工具一张卡片，默认收起；展开后看本地路径、版本，可更改路径、自动检测或下载。</p>
+      </div>
+      <div class="settings-cards" id="settings-cards"></div>
+      <div class="form-actions">
+        <button class="btn primary" id="save-settings">保存</button>
+        <button class="btn ghost" id="test-settings">测试全部</button>
+      </div>
+      <div id="settings-test" class="test-results"></div>
+      <div class="notice">
+        <b>ASE GUI</b> 不需要单独路径：直接复用上面的 Python 环境，命令是 <code>python -m ase gui</code>。
+        <b>ASE / MACE / PyTorch / matplotlib / spglib / pymatgen</b> 也都在这个 Python 环境里；<b>pyIAST</b> 等额外包需要时用同一个解释器 <code>pip install</code> 安装，不单独占路径卡片。
+        <b>Avogadro / RASPA2 / Zeo++</b> 是可选工具，没装不影响结构体检、MACE、QE 主流程；Jupyter 按当前计划暂搁置。
+      </div>
+      <div class="notice warn">
+        <b>不要</b>把端口改成 <code>0.0.0.0</code> 后暴露到公网。这是单机工具，没有登录系统。
+      </div>
+    </section>
+  </main>
+
+</div>
+
+<div class="modal-backdrop hidden" id="modal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="modal-title">参数</h3>
+      <button class="icon-btn" id="modal-close">×</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+<div class="toast hidden" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

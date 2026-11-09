@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+.venv*/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Runtime data / user outputs
+data/
+runs/
+one_click_mof/data/
+one_click_mof/runs/
+*.sqlite3
+*.sqlite3-*
+*.log
+
+# Downloaded models / pseudopotentials (too large; install separately)
+models/
+pseudo/
+pseudo_sssp/
+
+# Local / private working files
+.AAAAmofreinforce/
+mof/
+mof_ui_backup_2026-11-06/
+.tmp/
+.ffshot/
+CRASH
+dshsdbd.txt
+input_tmp.in
+/tutorial
+000_eta+N519+2.cif
+4109207.cif
+IRMOF-1.cube.vasp
+TUTORIAL_CN.md
+MACE_INSTALL.md
+ACNN_INSTALL.md
+screen_co2_mace.py
+deepseekREADME.md
+ONE_CLICK_MOF_MASTER.md
+one_click_mof/deepseekREADME.md
+one_click_mof/input_tmp.in
+one_click_mof/One-Click MOF.desktop
+one_click_mof/run_mof5*
+one_click_mof/__pycache__/
+one_click_mof/tools/__pycache__/
+one_click_mof/tutorial/15_walkthrough.md
+one_click_mof/tutorial/benchmark/mof5/RUN_*.md
+one_click_mof/tutorial/assets/SCREENSHOT_TODO.md
+
+# OS
+.DS_Store
+Thumbs.db

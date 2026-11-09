@@ -1,0 +1,9 @@
+# Install torch first (CUDA or CPU), then:
+#   pip install -r requirements.txt
+mace-torch==0.3.16
+ase==3.29.0
+numpy==1.26.4
+scipy==1.15.3
+matplotlib==3.10.9
+spglib==2.7.0
+markdown==3.10

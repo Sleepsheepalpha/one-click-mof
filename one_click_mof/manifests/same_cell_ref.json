@@ -1,0 +1,81 @@
+{
+  "id": "same_cell_ref",
+  "name": "同晶胞参考（ASE）",
+  "category": "结构",
+  "description": "从复合物 CIF 末尾取出吸附质，保留同一个晶胞和同一套分数坐标，删掉骨架，生成与复合物同 cell、同位置的参考分子 CIF。",
+  "accepts": [
+    ".cif"
+  ],
+  "params": [
+    {
+      "key": "n_mol",
+      "label": "分子原子数（尾部）",
+      "type": "int",
+      "default": 5,
+      "min": 0,
+      "max": 500,
+      "help": "复合物 CIF 末尾属于吸附质的原子数：CH4=5、C2H6=8、C6H6=12、CO2=3。填 0 时改用下面的“骨架原子数”。"
+    },
+    {
+      "key": "framework_natoms",
+      "label": "骨架原子数（备选）",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 2000,
+      "help": "如果不想数分子原子数，就填骨架原子数（MOF-5 原胞=106）；脚本用总原子数减它得到分子原子数。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/one_click_mof/tools/make_same_cell_ref.py",
+        "--complex",
+        "{input}",
+        "--n-mol",
+        "{n_mol}",
+        "--framework-natoms",
+        "{framework_natoms}",
+        "--out",
+        "{workdir}/reference.cif",
+        "--info-json",
+        "{workdir}/same_cell_ref.json"
+      ]
+    }
+  ],
+  "outputs": [
+    "reference.cif",
+    "same_cell_ref.json"
+  ],
+  "parser": "same_cell_ref",
+  "details": {
+    "what": "生成 reference 能量计算用的同晶胞、同坐标分子。它只删骨架，不移动分子：晶胞、分数坐标、截断和展宽都与复合物一致，这样 E_ref 才能和 E_complex 相减。",
+    "how": [
+      "用 ASE 读入复合物 CIF，保留周期边界。",
+      "取末尾 n_mol 个原子作为吸附质，其余原子视为骨架。",
+      "用原晶胞和这些原子的原始分数坐标写出 reference.cif。",
+      "回读 CIF，检查最大坐标误差；再写 same_cell_ref.json 供结果页显示。"
+    ],
+    "params": {
+      "n_mol": "吸附质在 CIF 末尾的原子数；CH4=5、C2H6=8、C6H6=12、CO2=3。",
+      "framework_natoms": "备选输入：骨架原子数。MOF-5 原胞填 106；和 n_mol 二选一。"
+    },
+    "example": "基准算例：CH4_site03.cif（111 原子，骨架 106 + CH4 5）→ n_mol=5 → reference.cif（5 原子、仍是 18.266 Å 原胞、CH4 坐标不变）。不要再用 20 Å 盒子单独算参考；那会引入约 1.9 eV 的假偏移。",
+    "warnings": [
+      "复合物 CIF 必须把吸附质原子放在最后；如果顺序不对，生成的是骨架片段，不是分子。",
+      "这个工具只生成结构，不跑 QE；生成后仍要用与复合物完全相同的 ecutwfc/ecutrho/degauss/conv_thr/赝势做单点。",
+      "n_mol 与 framework_natoms 不要同时填错；同时给出时脚本优先使用 n_mol。"
+    ]
+  },
+  "order": 25,
+  "estimate": {
+    "kind": "structure",
+    "reference": "任意 8GB 内存机器；106 原子约 1 秒",
+    "atoms_ref": 106,
+    "minutes_ref": 0.02,
+    "disk_mb_ref": 5,
+    "checkpoint_supported": false
+  },
+  "output_note": "输出 reference.cif 和一份小 JSON；默认目录即可。"
+}

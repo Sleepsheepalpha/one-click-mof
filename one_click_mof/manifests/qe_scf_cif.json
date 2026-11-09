@@ -1,0 +1,159 @@
+{
+  "id": "qe_scf_cif",
+  "name": "QE 单点（从 CIF 生成输入）",
+  "category": "DFT",
+  "description": "用 make_qe_input.py 从 CIF 生成 PBE-D3 单点输入，再用 pw.x 运行。适合 MOF 或已放好客体的结构（如 MOF-5 + CH4）。",
+  "accepts": [
+    ".cif"
+  ],
+  "params": [
+    {
+      "key": "np",
+      "label": "MPI 进程数",
+      "type": "int",
+      "default": 6,
+      "min": 1,
+      "max": 64,
+      "help": "MPI 进程数。111–118 原子常用 6；开太多会抢内存。"
+    },
+    {
+      "key": "npool",
+      "label": "k 点池",
+      "type": "int",
+      "default": 1,
+      "min": 1,
+      "max": 16,
+      "help": "k 点池。Gamma 点计算通常填 1。"
+    },
+    {
+      "key": "ecutwfc",
+      "label": "ecutwfc (Ry)",
+      "type": "float",
+      "default": 50,
+      "min": 20,
+      "max": 120,
+      "help": "波函数截断。生产计算常用 50 Ry；40 Ry 只适合内存不足时。"
+    },
+    {
+      "key": "ecutrho",
+      "label": "ecutrho (Ry)",
+      "type": "float",
+      "default": 400,
+      "min": 160,
+      "max": 960,
+      "help": "电荷密度截断。50/400 配套；改一个要同时改另一个。"
+    },
+    {
+      "key": "degauss",
+      "label": "degauss (Ry)",
+      "type": "float",
+      "default": 0.02,
+      "min": 0.001,
+      "max": 0.1,
+      "help": "展宽。生产常用 0.02 Ry；bare 和 complex 必须相同。"
+    },
+    {
+      "key": "conv_thr",
+      "label": "SCF 收敛阈值",
+      "type": "float",
+      "default": 0.0001,
+      "min": 1e-08,
+      "max": 0.01,
+      "help": "SCF 收敛阈值。大体系常用 1e-4；小体系可 1e-5。"
+    },
+    {
+      "key": "nspin",
+      "label": "nspin",
+      "type": "select",
+      "default": "1",
+      "options": [
+        "1",
+        "2"
+      ],
+      "help": "自旋。Zn/Mg/Zr 闭壳层填 1；开壳层金属才填 2。"
+    }
+  ],
+  "steps": [
+    {
+      "cmd": [
+        "{python}",
+        "{scripts}/make_qe_input.py",
+        "--cif",
+        "{input}",
+        "--out",
+        "{workdir}/mof.in",
+        "--mode",
+        "scf",
+        "--nspin",
+        "{nspin}",
+        "--ecutwfc",
+        "{ecutwfc}",
+        "--ecutrho",
+        "{ecutrho}",
+        "--degauss",
+        "{degauss}",
+        "--conv-thr",
+        "{conv_thr}",
+        "--pseudo-dir",
+        "{pseudo_dir}",
+        "--outdir",
+        "./tmp",
+        "--prefix",
+        "mof"
+      ]
+    },
+    {
+      "cmd": [
+        "{mpiexec}",
+        "-np",
+        "{np}",
+        "{pw}",
+        "-nk",
+        "{npool}",
+        "-in",
+        "{workdir}/mof.in"
+      ],
+      "stdout": "{workdir}/qe.out"
+    }
+  ],
+  "outputs": [
+    "mof.in",
+    "qe.out"
+  ],
+  "parser": "qe",
+  "details": {
+    "what": "用 Quantum ESPRESSO 的 pw.x 做 PBE-D3 单点。它把 CIF 先转成 QE 输入，再算一次总能量；不移动原子。",
+    "how": [
+      "调用 make_qe_input.py，把 CIF 写成 &CONTROL / &SYSTEM / ATOMIC_SPECIES 等段落。",
+      "用 mpiexec 启动 pw.x，输出写到 qe.out；111 原子 6 MPI 约 40 分钟。",
+      "解析 total energy、estimated scf accuracy、JOB DONE 等指标。"
+    ],
+    "params": {
+      "np": "MPI 进程数。111–118 原子常用 6；开太多会抢内存。",
+      "npool": "k 点池。Gamma 点计算通常填 1。",
+      "ecutwfc": "波函数截断。生产计算常用 50 Ry；40 Ry 只适合内存不足时。",
+      "ecutrho": "电荷密度截断。50/400 配套；改一个要同时改另一个。",
+      "degauss": "展宽。生产常用 0.02 Ry；bare 和 complex 必须相同。",
+      "conv_thr": "SCF 收敛阈值。大体系常用 1e-4；小体系可 1e-5。",
+      "nspin": "自旋。Zn/Mg/Zr 闭壳层填 1；开壳层金属才填 2。"
+    },
+    "example": "基准算例：bare IRMOF-1（106 原子）E = −5676.6522 Ry；CH4_site03 复合物（111 原子）E = −5700.0474 Ry，单点约 40 分钟。再配一份同晶胞、同坐标的 CH4 参考 −23.3425 Ry，才得到 E_ads = −0.716 eV。",
+    "warnings": [
+      "bare 和 complex 的截断、degauss、conv_thr、赝势必须完全一致。",
+      "看到 JOB DONE 不等于 SCF 真收敛；还要看 estimated scf accuracy 是否远小于 conv_thr。",
+      "nspin=1 只适用于 Zn/Mg/Zr 等闭壳层；Mn/Co/Ni 等要单独处理自旋。",
+      "参考分子必须与复合物同晶胞、同坐标；单独放 20 Å 盒子会让 E_ads 偏 1.9 eV（CH4 实测）。"
+    ]
+  },
+  "order": 40,
+  "estimate": {
+    "kind": "qe_scf",
+    "reference": "6 MPI / 16GB RAM；111 原子 50/400 单点约 40 分钟（GPU 不参与）",
+    "atoms_ref": 111,
+    "minutes_ref": 40,
+    "disk_mb_ref": 1500,
+    "scaling": 2.5,
+    "checkpoint_supported": true
+  },
+  "output_note": "QE 的 tmp/ 约 0.5 GB/111 原子（50/400），建议放到 /Data 这类空间大的盘；开启保存点会更大。"
+}
