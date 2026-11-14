@@ -127,7 +127,24 @@ bash one_click_mof/start.sh
 http://127.0.0.1:8765
 ```
 
-### 7. 路径设置
+### 7. 安装桌面图标 / 任务栏
+
+推荐安装成桌面应用，之后不用再 `cd` 或敲 Python 命令：
+
+```bash
+bash one_click_mof/install_launcher.sh
+```
+
+它会：
+
+- 在应用菜单注册 `One-Click MOF`
+- 在桌面生成 `One-Click MOF.desktop`
+- 把图标加入 GNOME 任务栏收藏夹
+- 双击图标时自动启动服务并打开浏览器
+
+之后直接点任务栏/桌面的 **One-Click MOF** 图标即可。移动项目目录后重新运行一次安装脚本。
+
+### 8. 路径设置
 
 进入网页“路径设置”，填写：
 
@@ -142,7 +159,7 @@ http://127.0.0.1:8765
 
 VESTA、Avogadro、RASPA2、Zeo++ 是可选工具；没有安装不影响主流程。
 
-### 8. 第一次验证
+### 9. 第一次验证
 
 1. “项目与文件” → 输入目录选 `one_click_mof/tutorial/benchmark/mof5/inputs`
 2. 扫描目录
@@ -166,8 +183,10 @@ one_click_mof/tutorial/
 ```text
 one_click_mof/
   app.py                本地 Web 服务
+  start.sh              启动服务并打开浏览器
+  install_launcher.sh   安装桌面图标/任务栏收藏
   manifests/            工具清单
-  static/               前端
+  static/               前端与图标
   tools/                结构体检、MACE 筛选、同晶胞参考
   tutorial/             教程与 MOF-5 基准输入
 make_qe_input.py        CIF -> QE 输入
