@@ -26,7 +26,185 @@
 - NVIDIA GPU 可选；MACE 可用 CPU，但会慢很多
 - 磁盘：至少 10 GB；QE 长任务建议把输出目录放到大盘
 
-## Ubuntu 22.04 安装
+## Windows 用户：WSL2 + Ubuntu 22.04
+
+本项目是 Linux 原生工作流（QE / OpenMPI / zenity）。Windows 上推荐先安装 **WSL2**，在 WSL2 的 Ubuntu 22.04 里运行；浏览器仍用 Windows 的 Edge/Chrome 打开 `http://localhost:8765`。
+
+> 暂无 Windows 原生一键包。原生 Windows 需要额外适配文件选择器、进程终止、启动脚本和 QE/MS-MPI 路径，当前不作为主路线。
+
+### 1. 前提检查
+
+- Windows 10 21H2+ 或 Windows 11（64 位）
+- BIOS 已开启虚拟化（Intel VT-x / AMD-V）
+- 使用管理员 PowerShell
+- 建议 Windows 11：自带 WSLg，`zenity` 文件选择框可用
+- Windows 10 没有 WSLg，文件选择框可能不可用，需要在网页里直接手填 WSL 路径
+
+### 2. 安装 WSL2 与 Ubuntu 22.04
+
+管理员 PowerShell：
+
+```powershell
+wsl --install -d Ubuntu-22.04
+wsl --set-default-version 2
+wsl --update
+```
+
+安装完成后重启 Windows。第一次从开始菜单打开 **Ubuntu 22.04**，设置 Linux 用户名和密码。
+
+检查版本：
+
+```powershell
+wsl -l -v
+```
+
+`VERSION` 应为 `2`。
+
+如果系统提示 `wsl` 不是命令，先启用 Windows 功能（管理员 PowerShell）：
+
+```powershell
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+```
+
+重启后执行：
+
+```powershell
+wsl --set-default-version 2
+wsl --install -d Ubuntu-22.04
+```
+
+如果 `Ubuntu-22.04` 不在可选列表中：
+
+```powershell
+wsl --list --online
+wsl --install -d Ubuntu-22.04
+```
+
+### 3. 安装 Ubuntu 依赖
+
+打开 Ubuntu 终端，执行：
+
+```bash
+sudo apt update
+sudo apt upgrade -y
+sudo apt install -y \
+  git python3 python3-venv python3-pip \
+  quantum-espresso openmpi-bin \
+  zenity xdg-utils
+```
+
+检查：
+
+```bash
+python3 --version
+pw.x -h | head
+mpiexec --version
+git --version
+```
+
+### 4. GPU 检查
+
+Windows 侧安装支持 WSL 的新版 NVIDIA 驱动；**不要在 WSL 里安装 Linux 显卡驱动**。
+
+在 Ubuntu 终端检查：
+
+```bash
+nvidia-smi
+```
+
+能显示 RTX 显卡即可。PyTorch 的 CUDA 版安装在 WSL 的 Python 环境里完成，安装命令与下面的 Ubuntu 步骤相同。
+
+如果继续使用 CPU 版 PyTorch，也可以运行，只是 MACE 会明显变慢。
+
+### 5. 放置代码
+
+建议把项目放在 WSL 的 Linux 主目录，而不是 `/mnt/c`，避免 QE 大量小文件 I/O 变慢：
+
+```bash
+cd ~
+git clone https://github.com/Sleepsheepalpha/one-click-mof.git
+cd one-click-mof
+```
+
+之后按下面的 **Ubuntu 22.04 安装** 第 3–5 步创建 Python 环境、放置 MACE 模型和 SSSP 赝势。
+
+> 不要在 Windows 里克隆后再用 WSL 运行。Windows 的换行符可能让 `start.sh` 报 `bad interpreter`；请直接在 WSL 终端里 `git clone`。
+
+### 6. 启动与访问
+
+在 WSL 的 Ubuntu 终端里：
+
+```bash
+cd ~/one-click-mof
+bash one_click_mof/start.sh
+```
+
+然后在 Windows 浏览器打开：
+
+```text
+http://localhost:8765
+```
+
+WSL2 会自动把 localhost 转发到 Windows。服务只监听 `127.0.0.1`，不要改成 `0.0.0.0`。
+
+> WSL2 里不要运行 `install_launcher.sh`：它面向 GNOME 桌面，WSL 没有 GNOME 会话。需要快捷方式时，在 Windows 创建一个指向 WSL 命令的快捷方式，或每次运行上面的 `start.sh`。
+
+### 7. Windows 与 WSL 路径对应
+
+| Windows | WSL2 |
+|---|---|
+| `C:\Users\name\data` | `/mnt/c/Users/name/data` |
+| `D:\MOF\runs` | `/mnt/d/MOF/runs` |
+| WSL 项目目录 | Windows 11：`\\wsl.localhost\Ubuntu\home\<user>\one-click-mof`；Windows 10：`\\wsl$\Ubuntu\home\<user>\one-click-mof` |
+
+网页“路径设置”里应填 WSL 路径，例如：
+
+```text
+/home/<user>/one-click-mof/.venv_mace/bin/python
+/usr/bin/pw.x
+/usr/bin/mpiexec
+/home/<user>/one-click-mof/pseudo_sssp
+/home/<user>/one-click-mof/models/umof/umof_models/uMOF-MH.model
+```
+
+Windows 11 的 WSLg 下，“浏览…”通常能打开 `zenity`；Windows 10 没有 WSLg 时，直接在输入框粘贴 WSL 路径。
+
+### 8. WSL 内存限制
+
+WSL2 默认可能占用较多或较少内存。大体系 QE 建议在 Windows 用户目录创建 `C:\Users\<WindowsUser>\.wslconfig`：
+
+```ini
+[wsl2]
+memory=24GB
+processors=12
+swap=8GB
+```
+
+保存后管理员 PowerShell 执行：
+
+```powershell
+wsl --shutdown
+```
+
+再重新打开 Ubuntu。数值按本机内存调整，至少给 Windows 留 4–6 GB。
+
+### 9. 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| `wsl` 不是内部或外部命令 | 先启用 WSL/虚拟机平台功能并重启 |
+| `WslRegisterDistribution failed` | BIOS 虚拟化未开启，或虚拟机平台功能未启用 |
+| `nvidia-smi` 找不到 | 更新 Windows NVIDIA 驱动；不要装 Linux 显卡驱动 |
+| 浏览器打不开 localhost | 确认 WSL 里 `start.sh` 仍在运行，端口 8765 未被占用 |
+| “浏览…”没有弹窗 | Windows 10 没有 WSLg；直接手填 WSL 路径 |
+| `start.sh: bad interpreter` | 在 WSL 里重新 clone，不要在 Windows 克隆后跨系统运行 |
+| QE 很慢 / 磁盘占用大 | 项目与输出放在 WSL 的 `~/`，不要放 `/mnt/c` |
+| 内存不足 | 调整 `.wslconfig` 的 `memory`，或减小 QE 并行/体系 |
+
+## Ubuntu 22.04 安装（原生 Ubuntu / WSL2）
+
+> 原生 Ubuntu 从第 1 步开始；已按上面 WSL2 完成系统依赖的，可跳过第 1 步，直接从第 3 步创建 Python 环境开始。
 
 ### 1. 安装系统依赖
 
@@ -202,10 +380,6 @@ requirements.txt        Python 依赖
 - QE 参数一致性仍需用户自己检查
 - MACE 只用于找位点和排序，不能替代最终 DFT 能量
 - 旧任务数据库里的绝对路径换机器后会失效
-
-## Windows
-
-暂无Windows 一键包。建议优先使用 **WSL2 + Ubuntu 22.04**，在 Linux 环境中运行同一套代码；Windows 浏览器访问 `http://127.0.0.1:8765`。原生 Windows 需要额外适配文件选择器、进程终止、启动脚本和 QE/MS-MPI 路径。
 
 ## 安全
 
