@@ -18,7 +18,9 @@ import csv
 import json
 import mimetypes
 import markdown
+import hpc
 import os
+import posixpath
 import re
 import shutil
 import signal
@@ -59,6 +61,11 @@ DEFAULT_SETTINGS = {
     "work_root": str(RUN_ROOT),
     "default_np": 6,
     "default_device": "cuda",
+    "hpc_host": "",
+    "hpc_port": 22,
+    "hpc_user": "",
+    "hpc_remote_root": "",
+    "hpc_refresh_s": 60,
 }
 
 
@@ -127,6 +134,23 @@ def init_db():
             finished_at TEXT,
             error TEXT,
             metrics TEXT
+        );
+        CREATE TABLE IF NOT EXISTS hpc_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host TEXT NOT NULL,
+            user TEXT NOT NULL,
+            name TEXT NOT NULL,
+            input_path TEXT NOT NULL,
+            input_name TEXT NOT NULL,
+            remote_dir TEXT,
+            log_path TEXT,
+            job_id TEXT,
+            cores INTEGER DEFAULT 4,
+            nodes INTEGER DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'submitting',
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            error TEXT
         );
         """)
         con.commit()
@@ -685,10 +709,12 @@ def run_job(job):
                     fh = log
                 with LOCK:
                     CURRENT["job_id"] = job_id
-                    proc = subprocess.Popen(
-                        cmd, cwd=cwd, stdout=fh, stderr=subprocess.STDOUT,
-                        env=env, start_new_session=True, text=True,
-                    )
+                    popen_kw = dict(cwd=cwd, stdout=fh, stderr=subprocess.STDOUT, env=env, text=True)
+                    if os.name == "nt":
+                        popen_kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                    else:
+                        popen_kw["start_new_session"] = True
+                    proc = subprocess.Popen(cmd, **popen_kw)
                     CURRENT["proc"] = proc
                 rc = proc.wait()
                 with LOCK:
@@ -943,6 +969,101 @@ def safe_tutorial_path(rel):
     return fp
 
 
+
+HPC_ACTIVE = {"submitting", "SUBMITTED", "PENDING", "RUNNING", "COMPLETING", "CONFIGURING", "REQUEUED"}
+HPC_DONE = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
+
+
+def hpc_task_dict(row):
+    d = dict(row)
+    d["active"] = (d.get("status") or "") in HPC_ACTIVE
+    return d
+
+
+def hpc_list_tasks(session, refresh=True):
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM hpc_tasks WHERE host=? AND user=? ORDER BY id DESC LIMIT 100",
+            (session.host, session.user),
+        ).fetchall()
+    out = []
+    for row in rows:
+        d = hpc_task_dict(row)
+        if refresh and d.get("job_id") and d.get("status") not in HPC_DONE:
+            try:
+                st = hpc.task_status(session, d["job_id"])
+                if st.get("state") and st["state"] != "unknown":
+                    d["status"] = st["state"]
+                    d["runtime"] = st.get("time", "")
+                    d["node_list"] = st.get("nodes", "")
+                    d["reason"] = st.get("reason", "")
+                    with connect() as con:
+                        con.execute(
+                            "UPDATE hpc_tasks SET status=?, updated_at=? WHERE id=?",
+                            (d["status"], now(), d["id"]),
+                        )
+                        con.commit()
+            except Exception as exc:
+                d["status_error"] = str(exc)
+        out.append(d)
+    return out
+
+
+def hpc_task_get(task_id):
+    with connect() as con:
+        row = con.execute("SELECT * FROM hpc_tasks WHERE id=?", (task_id,)).fetchone()
+    return hpc_task_dict(row) if row else None
+
+
+def hpc_task_new(session, body, settings):
+    input_path = hpc.normalize(session, str(body.get("input_path", "")))
+    input_name = posixpath.basename(input_path)
+    if not input_name:
+        raise hpc.HpcError("请选择远端输入文件")
+    name = str(body.get("name") or (posixpath.splitext(input_name)[0] + "_cp2k")).strip()
+    cores = max(1, min(512, int(body.get("cores") or 4)))
+    nodes = max(1, min(64, int(body.get("nodes") or 1)))
+    root = hpc.resolve_root(session, body.get("remote_root") or settings.get("hpc_remote_root") or "")
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO hpc_tasks(host,user,name,input_path,input_name,remote_dir,job_id,cores,nodes,status,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (session.host, session.user, name, input_path, input_name, "", "", cores, nodes, "submitting", now(), now()),
+        )
+        con.commit()
+        task_id = cur.lastrowid
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")[:40] or "task"
+    task_dir = posixpath.join(root, "tasks", f"{task_id}_{slug}")
+    try:
+        res = hpc.submit_cp2k(session, root, input_path, name, cores, nodes, task_dir)
+    except Exception as exc:
+        with connect() as con:
+            con.execute(
+                "UPDATE hpc_tasks SET status=?, error=?, updated_at=? WHERE id=?",
+                ("FAILED", str(exc), now(), task_id),
+            )
+            con.commit()
+        raise
+    with connect() as con:
+        con.execute(
+            "UPDATE hpc_tasks SET job_id=?, remote_dir=?, log_path=?, status=?, updated_at=? WHERE id=?",
+            (res["job_id"], res["task_dir"], res["log_path"], "SUBMITTED", now(), task_id),
+        )
+        con.commit()
+    return hpc_task_get(task_id)
+
+
+def hpc_settings_payload():
+    s = load_settings()
+    return {
+        "host": s.get("hpc_host", ""),
+        "port": int(s.get("hpc_port", 22) or 22),
+        "user": s.get("hpc_user", ""),
+        "remote_root": s.get("hpc_remote_root", ""),
+        "refresh_s": int(s.get("hpc_refresh_s", 60) or 60),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "One-Click-MOF/" + __version__
 
@@ -975,6 +1096,9 @@ class Handler(BaseHTTPRequestHandler):
         with connect() as con:
             return con.execute("SELECT * FROM projects WHERE id=?", (pid,)).fetchone()
 
+    def _hpc(self):
+        return hpc.get(self.headers.get("X-HPC-Token", ""))
+
     def do_GET(self):
         try:
             u = urlparse(self.path)
@@ -984,6 +1108,59 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html")
             if path.startswith("/static/"):
                 return self._static(path[len("/static/"):])
+            if path == "/api/hpc/settings":
+                return self._send(200, hpc_settings_payload())
+            if path == "/api/hpc/tool":
+                return self._send(200, {
+                    "id": "cp2k", "name": "CP2K 2023.2",
+                    "root": "/opt/soft/cp2k-2023.2",
+                    "submit": "/usr/bin/ifmccp2k",
+                    "partition": "public",
+                    "note": "每节点核数；节点数可选。输出与日志写入任务目录。",
+                    "example": "ifmccp2k complex.inp 32 1",
+                    "log_example": "tail -f complex.log",
+                    "energy_example": "grep \"ENERGY|\" complex.log | tail -1",
+                })
+            if path == "/api/hpc/localfiles":
+                try:
+                    return self._send(200, hpc.list_local(q.get("path", ["~"])[0], q.get("hidden", ["0"])[0] == "1"))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/files":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc.list_remote(s, q.get("path", [""])[0], q.get("hidden", ["0"])[0] == "1"))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/dashboard":
+                try:
+                    s = self._hpc()
+                    data = hpc.dashboard(s)
+                    data.update({"host": s.host, "user": s.user, "home": s.home, "fingerprint": s.fingerprint})
+                    return self._send(200, data)
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/tasks":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc_list_tasks(s, refresh=q.get("refresh", ["1"])[0] != "0"))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            m = re.match(r"^/api/hpc/tasks/(\d+)/log$", path)
+            if m:
+                try:
+                    s = self._hpc()
+                    t = hpc_task_get(int(m.group(1)))
+                    if not t:
+                        return self._send(404, {"error": "任务不存在"})
+                    pth = t.get("log_path") or ""
+                    if not pth and t.get("remote_dir"):
+                        pth = posixpath.join(t["remote_dir"], posixpath.splitext(t["input_name"])[0] + ".log")
+                    if not pth:
+                        return self._send(400, {"error": "任务没有日志路径"})
+                    return self._send(200, hpc.read_log(s, pth, int(q.get("lines", ["200"])[0])))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
             if path == "/api/tutorial":
                 try:
                     name = q.get("file", ["README.md"])[0]
@@ -1102,6 +1279,115 @@ class Handler(BaseHTTPRequestHandler):
             u = urlparse(self.path)
             path = u.path
             body = self._json()
+            if path == "/api/hpc/test":
+                try:
+                    return self._send(200, hpc.test_connection(
+                        str(body.get("host", "")).strip(),
+                        int(body.get("port") or 22),
+                        str(body.get("user", "")).strip(),
+                        str(body.get("password", "")),
+                    ))
+                except Exception as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/login":
+                try:
+                    host = str(body.get("host", "")).strip()
+                    port = int(body.get("port") or 22)
+                    user = str(body.get("user", "")).strip()
+                    password = str(body.get("password", ""))
+                    token, s = hpc.login(host, port, user, password)
+                    st = load_settings()
+                    root = str(body.get("remote_root") or st.get("hpc_remote_root") or "").strip() or (s.home + "/one_click_mof")
+                    st["hpc_host"] = host
+                    st["hpc_port"] = port
+                    st["hpc_user"] = user
+                    st["hpc_remote_root"] = root
+                    save_settings(st)
+                    data = hpc.dashboard(s)
+                    data.update({
+                        "token": token, "host": host, "port": port, "user": user,
+                        "home": s.home, "remote_root": root, "fingerprint": s.fingerprint,
+                    })
+                    return self._send(200, data)
+                except Exception as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/logout":
+                hpc.logout(self.headers.get("X-HPC-Token", ""))
+                return self._send(200, {"ok": True})
+            if path == "/api/hpc/mkdir":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc.mkdir_remote(s, str(body.get("path", ""))))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/delete":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc.delete_remote(s, body.get("paths") or []))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/local-delete":
+                try:
+                    return self._send(200, hpc.delete_local(body.get("paths") or [], DATA_DIR / "trash"))
+                except Exception as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/upload":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc.upload_paths(
+                        s, body.get("local_paths") or [], str(body.get("remote_dir", "")),
+                        bool(body.get("compress")),
+                    ))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/download":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc.download_paths(
+                        s, body.get("remote_paths") or [], str(body.get("local_dir", "")),
+                    ))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/tasks":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc_task_new(s, body, load_settings()))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            m = re.match(r"^/api/hpc/tasks/(\d+)/delete$", path)
+            if m:
+                try:
+                    s = self._hpc()
+                    t = hpc_task_get(int(m.group(1)))
+                    if not t:
+                        return self._send(404, {"error": "任务不存在"})
+                    if body.get("delete_files"):
+                        if t.get("status") in HPC_ACTIVE:
+                            return self._send(400, {"error": "任务仍在运行，不能删除远端目录"})
+                        if not t.get("remote_dir"):
+                            return self._send(400, {"error": "任务没有远端目录记录"})
+                        hpc.delete_remote(s, [t["remote_dir"]])
+                    with connect() as con:
+                        con.execute("DELETE FROM hpc_tasks WHERE id=?", (t["id"],))
+                        con.commit()
+                    return self._send(200, {"ok": True, "deleted_files": bool(body.get("delete_files"))})
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
+            m = re.match(r"^/api/hpc/tasks/(\d+)/cancel$", path)
+            if m:
+                try:
+                    s = self._hpc()
+                    t = hpc_task_get(int(m.group(1)))
+                    if not t:
+                        return self._send(404, {"error": "任务不存在"})
+                    if t.get("job_id"):
+                        hpc.cancel_job(s, t["job_id"])
+                    with connect() as con:
+                        con.execute("UPDATE hpc_tasks SET status=?, updated_at=? WHERE id=?", ("CANCELLED", now(), t["id"]))
+                        con.commit()
+                    return self._send(200, {"ok": True})
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
             if path == "/api/tools/detect":
                 spec = next((x for x in TOOL_SPECS if x["id"] == body.get("id")), None)
                 if not spec:
@@ -1140,12 +1426,27 @@ class Handler(BaseHTTPRequestHandler):
                 kind = str(body.get("kind", "dir"))
                 if kind not in ("file", "dir"):
                     return self._send(400, {"error": "kind 只能是 file 或 dir"})
+                title = str(body.get("title") or ("选择文件夹" if kind == "dir" else "选择文件"))
+                if os.name == "nt":
+                    try:
+                        import tkinter as tk
+                        from tkinter import filedialog
+                        with PICK_LOCK:
+                            root = tk.Tk()
+                            root.withdraw()
+                            root.attributes("-topmost", True)
+                            selected = filedialog.askdirectory(title=title) if kind == "dir" else filedialog.askopenfilename(title=title)
+                            root.destroy()
+                        if not selected:
+                            return self._send(200, {"cancelled": True})
+                        return self._send(200, {"path": os.path.abspath(selected)})
+                    except Exception as exc:
+                        return self._send(400, {"error": "Windows 文件选择框打开失败，请直接粘贴路径：" + str(exc)})
                 if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
                     return self._send(400, {"error": "当前服务没有图形显示（DISPLAY/WAYLAND_DISPLAY 为空），无法打开系统对话框；请直接粘贴路径。"})
                 zenity = shutil.which("zenity")
                 if not zenity:
                     return self._send(400, {"error": "系统里没有 zenity，无法打开文件夹选择框；请直接粘贴路径，或安装 zenity。"})
-                title = str(body.get("title") or ("选择文件夹" if kind == "dir" else "选择文件"))
                 cmd = [zenity, "--file-selection", "--title", title]
                 if kind == "dir":
                     cmd.append("--directory")
@@ -1164,6 +1465,12 @@ class Handler(BaseHTTPRequestHandler):
                 target = str(body.get("path", "")).strip()
                 if not target or not Path(target).exists():
                     return self._send(400, {"error": "路径不存在"})
+                if os.name == "nt":
+                    try:
+                        os.startfile(target)
+                    except Exception as exc:
+                        return self._send(400, {"error": "打开路径失败：" + str(exc)})
+                    return self._send(200, {"ok": True})
                 xdg = shutil.which("xdg-open")
                 if not xdg:
                     return self._send(400, {"error": "系统里没有 xdg-open"})
@@ -1312,7 +1619,10 @@ class Handler(BaseHTTPRequestHandler):
                     proc = CURRENT["proc"] if CURRENT["job_id"] == jid else None
                 if proc and proc.poll() is None:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        if os.name == "nt":
+                            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+                        else:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                     except Exception:
                         proc.terminate()
                 with connect() as con:
@@ -1379,7 +1689,7 @@ def main():
     t = threading.Thread(target=worker, daemon=True)
     t.start()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"MOF 工具台: http://{args.host}:{args.port}")
+    print(f"one_click_mof: http://{args.host}:{args.port}")
     print(f"数据库: {DB_PATH}")
     print(f"运行目录: {load_settings()['work_root']}")
     try:

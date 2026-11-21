@@ -29,13 +29,24 @@
         <div class="brand-sub">local workbench</div>
       </div>
     </div>
-    <nav class="nav">
+    <div class="workspace-switch">
+      <button type="button" class="workspace-btn active" data-workspace="local">本地</button>
+      <button type="button" class="workspace-btn" data-workspace="hpc">超算</button>
+    </div>
+    <nav class="nav local-nav" id="local-nav">
       <button class="nav-item active" data-view="projects"><span>01</span> 项目与文件</button>
       <button class="nav-item" data-view="tools"><span>02</span> 工具与参数</button>
       <button class="nav-item" data-view="runs"><span>03</span> 运行队列</button>
       <button class="nav-item" data-view="results"><span>04</span> 结果与筛选</button>
       <button class="nav-item" data-view="tutorial"><span>05</span> 教程</button>
       <button class="nav-item" data-view="settings"><span>06</span> 路径设置</button>
+    </nav>
+    <nav class="nav hpc-nav" id="hpc-nav">
+      <button class="nav-item" data-view="hpc-dashboard"><span>01</span> 仪表盘</button>
+      <button class="nav-item" data-view="hpc-files"><span>02</span> 项目与文件</button>
+      <button class="nav-item" data-view="hpc-tasks"><span>03</span> 任务</button>
+      <button class="nav-item" data-view="hpc-tools"><span>04</span> 工具设置</button>
+      <button class="nav-item" data-view="hpc-settings"><span>05</span> 通用设置</button>
     </nav>
     <div class="skin-picker">
       <button type="button" class="skin-toggle" id="skin-toggle" aria-expanded="false">
@@ -234,6 +245,134 @@
             <tbody><tr><td colspan="7" class="empty">还没有完成的任务。</td></tr></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <!-- 超算：登录 -->
+    <section class="view" id="view-hpc-login">
+      <div class="hpc-login-wrap">
+        <div class="card hpc-login-card">
+          <div class="section-intro">
+            <h2>连接超算</h2>
+            <p>密码只用于本次网页会话，不写入磁盘。关闭页面或退出后需要重新输入。</p>
+          </div>
+          <form id="hpc-login-form" class="hpc-form">
+            <label>登录节点<input id="hpc-host" placeholder="例如 192.9.207.186" autocomplete="off" required></label>
+            <label>SSH 端口<input id="hpc-port" type="number" value="22" min="1" max="65535" required></label>
+            <label>用户名<input id="hpc-user" placeholder="你的超算账号" autocomplete="username" required></label>
+            <label>密码<input id="hpc-password" type="password" autocomplete="current-password" required></label>
+            <div class="form-actions">
+              <button type="button" class="btn ghost" id="hpc-test">测试连接</button>
+              <button type="submit" class="btn primary" id="hpc-login-submit">登录并进入</button>
+            </div>
+          </form>
+          <div id="hpc-login-status" class="hpc-status"></div>
+          <div class="notice">首次使用请确认该电脑已连接楼内有线内网。浏览器通过本地后端 SSH 到登录节点，密码不会保存。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 超算：仪表盘 -->
+    <section class="view" id="view-hpc-dashboard">
+      <div class="section-intro">
+        <h2>超算仪表盘</h2>
+        <p id="hpc-dash-sub">登录后加载集群状态。</p>
+      </div>
+      <div class="hpc-dash-grid">
+        <div class="card hpc-metric"><span>节点</span><b id="hpc-metric-nodes">—</b><small id="hpc-metric-nodes-sub">alloc / mix / idle</small></div>
+        <div class="card hpc-metric"><span>队列</span><b id="hpc-metric-queue">—</b><small id="hpc-metric-queue-sub">running / pending</small></div>
+        <div class="card hpc-metric"><span>空闲内存</span><b id="hpc-metric-mem">—</b><small>所有节点合计</small></div>
+        <div class="card hpc-metric"><span>我的任务</span><b id="hpc-metric-mine">—</b><small>运行 + 等待</small></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div><h2>节点状态</h2><span class="hint" id="hpc-nodes-hint">—</span></div>
+          <div class="toolbar"><button class="btn small ghost" id="hpc-refresh-dashboard">刷新</button></div>
+        </div>
+        <div class="table-wrap"><table class="table" id="hpc-nodes-table"><thead><tr><th>分区</th><th>节点</th><th>状态</th><th>CPU</th><th>总内存</th><th>空闲内存</th><th>load</th></tr></thead><tbody><tr><td colspan="7" class="empty">尚未加载。</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>我的 Slurm 任务</h2><span class="hint">来自 squeue</span></div>
+        <div class="table-wrap"><table class="table" id="hpc-user-jobs-table"><thead><tr><th>Job ID</th><th>名称</th><th>状态</th><th>运行时间</th><th>节点</th><th>原因</th></tr></thead><tbody><tr><td colspan="6" class="empty">当前没有任务。</td></tr></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- 超算：文件 -->
+    <section class="view" id="view-hpc-files">
+      <div class="section-intro">
+        <h2>项目与文件</h2>
+        <p>左侧本地文件，右侧超算文件。上传目标默认为右侧当前目录。</p>
+      </div>
+      <div class="hpc-files-grid">
+        <div class="card hpc-file-pane">
+          <div class="card-head"><div><h2>本地</h2><span class="hint" id="hpc-local-hint">—</span></div></div>
+          <div class="path-row"><input id="hpc-local-path" placeholder="/home/..."><button class="btn pick" id="hpc-local-go">转到</button><button class="btn pick" id="hpc-local-pick">浏览…</button></div>
+          <div class="hpc-file-list" id="hpc-local-list"><div class="empty">尚未加载。</div></div>
+          <div class="toolbar hpc-file-actions"><button class="btn small" id="hpc-upload-selected" disabled>一键上传选中</button><span class="hint" id="hpc-local-selected">0 个</span></div>
+        </div>
+        <div class="card hpc-file-pane">
+          <div class="card-head"><div><h2>超算</h2><span class="hint" id="hpc-remote-hint">—</span></div></div>
+          <div class="path-row"><input id="hpc-remote-path" placeholder="/home/..."><button class="btn pick" id="hpc-remote-go">转到</button><button class="btn pick" id="hpc-remote-up">上一级</button><button class="btn pick" id="hpc-new-folder">新建文件夹</button></div>
+          <div class="hpc-file-list" id="hpc-remote-list"><div class="empty">尚未加载。</div></div>
+          <div class="toolbar hpc-file-actions"><button class="btn small" id="hpc-download-selected" disabled>下载选中</button><button class="btn small danger" id="hpc-delete-selected" disabled>删除选中</button><span class="hint" id="hpc-remote-selected">0 个</span></div>
+        </div>
+      </div>
+      <div id="hpc-file-status" class="hpc-status"></div>
+    </section>
+
+    <!-- 超算：任务 -->
+    <section class="view" id="view-hpc-tasks">
+      <div class="section-intro">
+        <h2>任务</h2>
+        <p>提交 CP2K 任务并查看 Slurm 队列。任务列表删除与远端文件删除是两件事。</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div><h2>队列</h2><span class="hint" id="hpc-tasks-hint">—</span></div>
+          <div class="toolbar"><button class="btn small ghost" id="hpc-refresh-tasks">刷新</button><button class="btn small primary" id="hpc-new-task">新建任务</button></div>
+        </div>
+        <div class="table-wrap"><table class="table" id="hpc-tasks-table"><thead><tr><th>#</th><th>任务</th><th>输入</th><th>Job ID</th><th>状态</th><th>核/节点</th><th>操作</th></tr></thead><tbody><tr><td colspan="7" class="empty">还没有超算任务。</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>任务日志</h2><span class="hint">鼠标悬停任务行可看更多操作；日志只预览尾部。</span></div>
+        <div class="table-wrap"><table class="table" id="hpc-task-logs-table"><thead><tr><th>任务</th><th>Job ID</th><th>状态</th><th>日志</th><th>操作</th></tr></thead><tbody><tr><td colspan="5" class="empty">还没有任务日志。</td></tr></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- 超算：工具设置 -->
+    <section class="view" id="view-hpc-tools">
+      <div class="section-intro"><h2>工具设置</h2><p>超算端可用的计算工具。第一版只有 CP2K。</p></div>
+      <div class="card hpc-tool-card">
+        <div class="card-head"><div><h2>CP2K 2023.2</h2><span class="hint">/opt/soft/cp2k-2023.2</span></div><span class="tag">Slurm</span></div>
+        <div class="hpc-tool-grid">
+          <div><span>提交脚本</span><code>/usr/bin/ifmccp2k</code></div>
+          <div><span>分区</span><code>public（按账号自动读取）</code></div>
+          <div><span>每节点核数</span><code>默认 4，可改</code></div>
+          <div><span>节点数</span><code>默认 1，可改</code></div>
+        </div>
+        <div class="hpc-example"><b>示例</b><code>ifmccp2k complex.inp 32 1</code><code>tail -f complex.log</code><code>grep "ENERGY|" complex.log | tail -1</code></div>
+        <div class="form-actions"><button class="btn ghost" id="hpc-new-tool">新建工具</button></div>
+      </div>
+    </section>
+
+    <!-- 超算：通用设置 -->
+    <section class="view" id="view-hpc-settings">
+      <div class="section-intro"><h2>通用设置</h2><p>连接信息保存到本机设置文件，密码不保存。</p></div>
+      <div class="card">
+        <div class="form-row">
+          <label>登录节点<input id="hpc-set-host" placeholder="192.9.207.186"></label>
+          <label>SSH 端口<input id="hpc-set-port" type="number" value="22"></label>
+          <label>用户名<input id="hpc-set-user" placeholder="yangy"></label>
+        </div>
+        <label>远程工作根目录<input id="hpc-set-root" placeholder="留空则使用 ~/one_click_mof"></label>
+        <div class="form-row"><label>仪表盘刷新间隔（秒）<input id="hpc-set-refresh" type="number" min="15" max="600" value="60"></label></div>
+        <div class="form-actions">
+          <button class="btn primary" id="hpc-save-settings">保存设置</button>
+          <button class="btn ghost" id="hpc-test-settings">测试连接</button>
+          <button class="btn danger" id="hpc-logout">退出账号</button>
+        </div>
+        <div id="hpc-settings-status" class="hpc-status"></div>
+        <div class="hpc-account" id="hpc-account"></div>
       </div>
     </section>
 

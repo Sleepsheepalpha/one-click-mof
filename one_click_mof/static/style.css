@@ -737,3 +737,83 @@ html[data-skin="dynamic-night"] .status.cancelling { background: rgba(214,165,91
 /* light dynamic day keeps the current light layout; only the canvas is new */
 html[data-skin="dynamic-day"] .sidebar { background: rgba(18, 51, 56, .86); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 
+
+/* -------------------------------------------------------------------------
+   local / hpc workspace
+   ------------------------------------------------------------------------- */
+.workspace-switch {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 0 2px 12px;
+  padding: 4px; border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
+  background: rgba(255,255,255,.035);
+}
+.workspace-btn {
+  appearance: none; border: 0; border-radius: 7px; background: transparent;
+  color: #93b0ac; font: inherit; font-size: 11.5px; padding: 6px 8px; cursor: pointer;
+}
+.workspace-btn:hover { color: #d8e8e4; background: rgba(255,255,255,.06); }
+.workspace-btn.active { background: #1d474b; color: #fff; box-shadow: inset 0 0 0 1px rgba(224,122,79,.32); }
+body.hpc-mode .local-nav { display: none; }
+body.hpc-mode .hpc-nav { display: flex; }
+body:not(.hpc-mode) .hpc-nav { display: none; }
+
+.hpc-login-wrap { max-width: 620px; margin: 0 auto; }
+.hpc-login-card { padding: 24px; }
+.hpc-form { display: grid; gap: 12px; max-width: 520px; }
+.hpc-form input { width: 100%; }
+.hpc-status { min-height: 18px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.hpc-status.bad { color: var(--bad); }
+.hpc-status.ok { color: var(--ok); }
+
+.hpc-dash-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.hpc-metric { padding: 15px 16px; margin-bottom: 14px; display: flex; flex-direction: column; gap: 2px; }
+.hpc-metric span { font-size: 10px; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); }
+.hpc-metric b { font-size: 24px; line-height: 1.25; color: var(--ink); }
+.hpc-metric small { font-size: 10.5px; color: var(--muted); }
+
+.hpc-files-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.hpc-file-pane { min-width: 0; }
+.hpc-file-pane .path-row { margin: 8px 0 10px; }
+.hpc-file-pane .path-row input { min-width: 0; }
+.hpc-file-list {
+  border: 1px solid var(--line); border-radius: 9px; overflow: auto;
+  min-height: 345px; max-height: 56vh; background: rgba(4, 12, 14, .18);
+}
+.hpc-file-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 9px;
+  border-bottom: 1px solid rgba(170,205,200,.10); cursor: default; min-width: 0;
+}
+.hpc-file-row:last-child { border-bottom: 0; }
+.hpc-file-row:hover, .hpc-file-row.selected { background: rgba(92,185,174,.10); }
+.hpc-file-row .hpc-file-check { accent-color: var(--teal); flex: 0 0 auto; }
+.hpc-file-main { display: flex; align-items: center; gap: 7px; min-width: 0; flex: 1; }
+.hpc-file-icon { width: 18px; text-align: center; color: #8fd6cc; flex: 0 0 auto; }
+.hpc-file-name { font-size: 12px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hpc-file-meta { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.hpc-file-row .row-actions { display: flex; gap: 3px; opacity: 0; pointer-events: none; transition: opacity .12s; flex: 0 0 auto; }
+.hpc-file-row:hover .row-actions, .hpc-file-row:focus-within .row-actions { opacity: 1; pointer-events: auto; }
+.hpc-file-row .row-actions .btn { padding: 2px 5px; font-size: 10px; }
+.hpc-file-actions { margin-top: 10px; }
+.hpc-file-empty { padding: 30px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+
+.hpc-tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0 14px; }
+.hpc-tool-grid div { display: flex; flex-direction: column; gap: 3px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.035); }
+.hpc-tool-grid span { font-size: 10.5px; color: var(--muted); }
+.hpc-tool-grid code { font-size: 11px; color: var(--ink); overflow-wrap: anywhere; }
+.hpc-example { display: flex; flex-direction: column; gap: 5px; padding: 11px 12px; border-radius: 8px; background: rgba(5,13,15,.30); border: 1px solid var(--line); }
+.hpc-example b { font-size: 11px; color: var(--muted); }
+.hpc-example code { font-size: 11px; }
+.hpc-account { margin-top: 12px; color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.hpc-login-card .notice { margin-top: 16px; }
+
+@media (max-width: 1100px) {
+  .hpc-dash-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hpc-files-grid { grid-template-columns: 1fr; }
+  .hpc-tool-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .hpc-dash-grid { grid-template-columns: 1fr; }
+  .hpc-file-list { min-height: 260px; }
+  .workspace-switch { margin-bottom: 8px; }
+}
+
+

@@ -15,6 +15,14 @@ const state = {
   filter: { key: '', op: 'lt', value: '' },
   logTimer: null,
   tutorial: { files: [], current: 'README.md', visible: true },
+  workspace: (() => { try { return localStorage.getItem('mofui.workspace') === 'hpc' ? 'hpc' : 'local'; } catch (e) { return 'local'; } })(),
+  view: 'projects',
+  hpc: {
+    token: null, host: '', port: 22, user: '', home: '', remoteRoot: '',
+    dashboard: null, localPath: '', remotePath: '', localItems: [], remoteItems: [],
+    selectedLocal: new Set(), selectedRemote: new Set(), tasks: [], timer: null,
+    fingerprint: '',
+  },
 };
 
 const TITLES = {
@@ -24,12 +32,18 @@ const TITLES = {
   results: ['结果与筛选', '筛选只影响显示和导出；删除记录时可选择清理缓存/输出。'],
   tutorial: ['教程', '按章节阅读；先读第 0–2 章，再按需跳转。'],
   settings: ['路径设置', '每个工具一张卡片；查看版本、路径，自动检测或下载。'],
+  'hpc-login': ['连接超算', '通过 SSH 登录节点查看集群并提交任务。密码只用于本次会话。'],
+  'hpc-dashboard': ['超算仪表盘', '节点、队列和自己的 Slurm 任务。'],
+  'hpc-files': ['项目与文件', '本地文件与超算文件，支持上传、下载、建目录和删除。'],
+  'hpc-tasks': ['任务', '提交 CP2K 任务，查看队列与日志。'],
+  'hpc-tools': ['工具设置', '超算端可用的计算工具。'],
+  'hpc-settings': ['通用设置', '超算连接、远程根目录和刷新间隔。'],
 };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...opts,
+    headers: Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {}),
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   let data = null;
@@ -292,18 +306,50 @@ function statusHtml(s) {
   return '<span class="status ' + esc(s || '') + '">' + esc(statusText(s)) + '</span>';
 }
 
+function switchWorkspace(ws) {
+  state.workspace = ws === 'hpc' ? 'hpc' : 'local';
+  try { localStorage.setItem('mofui.workspace', state.workspace); } catch (e) {}
+  $$('.workspace-btn').forEach(b => b.classList.toggle('active', b.dataset.workspace === state.workspace));
+  if (state.workspace === 'hpc') {
+    switchView(state.hpc.token ? 'hpc-dashboard' : 'hpc-login');
+  } else {
+    switchView('projects');
+  }
+}
+
 function switchView(name) {
+  if (name && name.startsWith('hpc-')) {
+    state.workspace = 'hpc';
+    try { localStorage.setItem('mofui.workspace', 'hpc'); } catch (e) {}
+  }
+  if (name !== 'hpc-login' && name && name.startsWith('hpc-') && !state.hpc.token) name = 'hpc-login';
+  state.view = name;
+  $$('.workspace-btn').forEach(b => b.classList.toggle('active', b.dataset.workspace === state.workspace));
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   const t = TITLES[name] || TITLES.projects;
   $('#page-title').textContent = t[0];
   $('#page-sub').textContent = t[1];
+  if (name.startsWith('hpc-')) {
+    $('#project-pill').textContent = state.hpc.token ? (state.hpc.user + '@' + state.hpc.host) : '未登录超算';
+  } else if (state.project) {
+    $('#project-pill').textContent = state.project.name + ' · ' + state.project.input_dir;
+  } else {
+    $('#project-pill').textContent = '未选择项目';
+  }
   if (name === 'runs') refreshJobs();
   if (name === 'results') refreshResults();
   if (name === 'tools') renderTools();
+  if (name === 'settings') renderSettings();
+  if (name === 'hpc-login') fillHpcLogin();
+  if (name === 'hpc-dashboard') refreshHpcDashboard();
+  if (name === 'hpc-files') loadHpcFiles();
+  if (name === 'hpc-tasks') loadHpcTasks();
+  if (name === 'hpc-settings') fillHpcSettings();
+  startHpcTimer(name);
+  document.body.classList.toggle('hpc-mode', name.startsWith('hpc-'));
   document.body.classList.toggle('tutorial-mode', name === 'tutorial');
   if (name === 'tutorial') loadTutorial(state.tutorial.current || 'README.md').catch(err => toast(err.message, true));
-  if (name === 'settings') renderSettings();
 }
 
 async function loadTutorial(name = 'README.md') {
@@ -1377,6 +1423,7 @@ async function loadCore() {
   renderToolSelect();
   renderToolParams();
   renderSettings();
+  applyHpcSettings();
   if (!state.project && projects.length) selectProject(projects[0].id);
 }
 
@@ -1384,6 +1431,526 @@ function updateServer(ok) {
   const dot = $('#server-dot');
   dot.className = 'dot ' + (ok ? 'ok' : 'bad');
   $('#server-text').textContent = ok ? '本地服务在线' : '服务断开';
+}
+
+
+
+/* -------------------------------------------------------------------------
+   HPC workspace
+   ------------------------------------------------------------------------- */
+function hpcFmtBytes(n) {
+  n = Number(n) || 0;
+  if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function hpcFmtMem(mb) {
+  mb = Number(mb) || 0;
+  if (mb >= 1024 * 1024) return (mb / 1024 / 1024).toFixed(1) + ' TB';
+  return (mb / 1024).toFixed(1) + ' GB';
+}
+
+function hpcStateText(s) {
+  const map = {
+    submitting: '提交中', SUBMITTED: '已提交', PENDING: '等待', RUNNING: '运行中',
+    COMPLETING: '收尾', CONFIGURING: '准备', COMPLETED: '完成', FAILED: '失败',
+    CANCELLED: '已取消', TIMEOUT: '超时', OUT_OF_MEMORY: '内存不足',
+    NODE_FAIL: '节点故障', PREEMPTED: '被抢占', unknown: '未知',
+  };
+  return map[s] || s || '—';
+}
+
+function hpcStateClass(s) {
+  if (s === 'RUNNING' || s === 'COMPLETING' || s === 'CONFIGURING' || s === 'SUBMITTED') return 'running';
+  if (s === 'PENDING' || s === 'submitting') return 'queued';
+  if (s === 'COMPLETED') return 'done';
+  if (s === 'CANCELLED') return 'cancelled';
+  if (s === 'FAILED' || s === 'TIMEOUT' || s === 'OUT_OF_MEMORY' || s === 'NODE_FAIL' || s === 'PREEMPTED') return 'failed';
+  return 'queued';
+}
+
+function hpcStatus(text, bad) {
+  const el = $('#hpc-login-status');
+  if (!el) return;
+  el.className = 'hpc-status' + (bad ? ' bad' : (text ? ' ok' : ''));
+  el.textContent = text || '';
+}
+
+function hpcSettingsStatus(text, bad) {
+  const el = $('#hpc-settings-status');
+  if (!el) return;
+  el.className = 'hpc-status' + (bad ? ' bad' : (text ? ' ok' : ''));
+  el.textContent = text || '';
+}
+
+async function hpcApi(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {}, { 'X-HPC-Token': state.hpc.token || '' });
+  try {
+    return await api(path, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    if (String(e.message).indexOf('会话') >= 0) {
+      state.hpc.token = null;
+      switchView('hpc-login');
+    }
+    throw e;
+  }
+}
+
+function applyHpcSettings() {
+  const s = state.settings || {};
+  state.hpc.host = s.hpc_host || state.hpc.host || '';
+  state.hpc.port = Number(s.hpc_port || state.hpc.port || 22);
+  state.hpc.user = s.hpc_user || state.hpc.user || '';
+  state.hpc.remoteRoot = s.hpc_remote_root || state.hpc.remoteRoot || '';
+  fillHpcLogin();
+  fillHpcSettings();
+}
+
+function fillHpcLogin() {
+  if (!$('#hpc-host')) return;
+  $('#hpc-host').value = state.hpc.host || state.settings.hpc_host || '';
+  $('#hpc-port').value = state.hpc.port || state.settings.hpc_port || 22;
+  $('#hpc-user').value = state.hpc.user || state.settings.hpc_user || '';
+  $('#hpc-password').value = '';
+}
+
+function fillHpcSettings() {
+  if (!$('#hpc-set-host')) return;
+  $('#hpc-set-host').value = state.hpc.host || state.settings.hpc_host || '';
+  $('#hpc-set-port').value = state.hpc.port || state.settings.hpc_port || 22;
+  $('#hpc-set-user').value = state.hpc.user || state.settings.hpc_user || '';
+  $('#hpc-set-root').value = state.hpc.remoteRoot || state.settings.hpc_remote_root || '';
+  $('#hpc-set-refresh').value = state.settings.hpc_refresh_s || 60;
+  const acc = $('#hpc-account');
+  if (acc) {
+    if (state.hpc.token) {
+      acc.textContent = '已登录：' + state.hpc.user + '@' + state.hpc.host + ' · home=' + state.hpc.home + (state.hpc.fingerprint ? ' · host key ' + state.hpc.fingerprint : '');
+    } else {
+      acc.textContent = '当前未登录超算。';
+    }
+  }
+}
+
+async function hpcLogin(ev) {
+  if (ev) ev.preventDefault();
+  const host = $('#hpc-host').value.trim();
+  const port = Number($('#hpc-port').value) || 22;
+  const user = $('#hpc-user').value.trim();
+  const password = $('#hpc-password').value;
+  if (!host || !user || !password) { hpcStatus('请填写地址、用户名和密码', true); return; }
+  const btn = $('#hpc-login-submit');
+  btn.disabled = true;
+  btn.textContent = '连接中…';
+  hpcStatus('正在 SSH 连接…');
+  try {
+    const d = await api('/api/hpc/login', { method: 'POST', body: {
+      host, port, user, password, remote_root: state.hpc.remoteRoot || state.settings.hpc_remote_root || '',
+    }});
+    state.hpc.token = d.token;
+    state.hpc.host = d.host;
+    state.hpc.port = d.port;
+    state.hpc.user = d.user;
+    state.hpc.home = d.home;
+    state.hpc.remoteRoot = d.remote_root || (d.home + '/one_click_mof');
+    state.hpc.fingerprint = d.fingerprint || '';
+    // Start at the account home; the configured root may not exist yet.
+    state.hpc.remotePath = d.home;
+    state.hpc.localPath = state.hpc.localPath || (state.project && state.project.input_dir) || '~';
+    state.settings.hpc_host = d.host;
+    state.settings.hpc_port = d.port;
+    state.settings.hpc_user = d.user;
+    state.settings.hpc_remote_root = state.hpc.remoteRoot;
+    $('#hpc-password').value = '';
+    hpcStatus('已连接：' + d.user + '@' + d.host + (d.fingerprint ? ' · ' + d.fingerprint : ''));
+    applyHpcSettings();
+    switchView('hpc-dashboard');
+  } catch (e) {
+    hpcStatus(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '登录并进入';
+  }
+}
+
+async function hpcTestLogin() {
+  const host = $('#hpc-host').value.trim();
+  const port = Number($('#hpc-port').value) || 22;
+  const user = $('#hpc-user').value.trim();
+  const password = $('#hpc-password').value;
+  if (!host || !user || !password) { hpcStatus('请填写地址、用户名和密码', true); return; }
+  hpcStatus('正在测试 SSH…');
+  try {
+    const d = await api('/api/hpc/test', { method: 'POST', body: { host, port, user, password } });
+    hpcStatus('连接成功：' + d.hostname + ' · ' + d.whoami + ' · ' + d.fingerprint, false);
+  } catch (e) { hpcStatus(e.message, true); }
+}
+
+async function refreshHpcDashboard(silent) {
+  if (!state.hpc.token) return;
+  try {
+    const d = await hpcApi('/api/hpc/dashboard');
+    state.hpc.dashboard = d;
+    renderHpcDashboard();
+    if (!silent) toast('仪表盘已刷新', false, 1600);
+  } catch (e) { if (!silent) toast(e.message, true); }
+}
+
+function renderHpcDashboard() {
+  const d = state.hpc.dashboard;
+  if (!d) return;
+  const t = d.totals || {};
+  const states = d.node_states || {};
+  $('#hpc-metric-nodes').textContent = t.nodes || 0;
+  $('#hpc-metric-nodes-sub').textContent = (states.alloc || 0) + ' alloc · ' + (states.mix || 0) + ' mix · ' + (states.idle || 0) + ' idle';
+  $('#hpc-metric-queue').textContent = (d.running || 0) + ' / ' + (d.pending || 0);
+  $('#hpc-metric-queue-sub').textContent = 'running / pending';
+  $('#hpc-metric-mem').textContent = hpcFmtMem(t.free_mem_mb || 0);
+  $('#hpc-metric-mine').textContent = (d.user_jobs || []).length;
+  $('#hpc-dash-sub').textContent = d.user + '@' + d.host + ' · 刷新于 ' + new Date((d.fetched_at || 0) * 1000).toLocaleTimeString();
+  $('#hpc-nodes-hint').textContent = (d.nodes || []).length + ' 个节点 · 共 ' + (t.cpus || 0) + ' 核';
+  const nb = $('#hpc-nodes-table tbody');
+  nb.innerHTML = (d.nodes || []).map(n => '<tr>' +
+    '<td>' + esc(n.partition) + '</td><td><b>' + esc(n.node) + '</b></td>' +
+    '<td>' + esc(n.state) + '</td><td>' + esc(n.cpus) + '</td>' +
+    '<td>' + esc(hpcFmtMem(n.memory_mb)) + '</td><td>' + esc(hpcFmtMem(n.free_mem_mb)) + '</td><td>' + esc(n.load) + '</td></tr>').join('') ||
+    '<tr><td colspan="7" class="empty">没有节点。</td></tr>';
+  const jb = $('#hpc-user-jobs-table tbody');
+  jb.innerHTML = (d.user_jobs || []).map(j => '<tr>' +
+    '<td>' + esc(j.job_id) + '</td><td>' + esc(j.name) + '</td>' +
+    '<td><span class="status ' + hpcStateClass(j.state) + '">' + esc(hpcStateText(j.state)) + '</span></td>' +
+    '<td>' + esc(j.time) + '</td><td>' + esc(j.nodes) + '</td><td>' + esc(j.reason) + '</td></tr>').join('') ||
+    '<tr><td colspan="6" class="empty">当前没有任务。</td></tr>';
+}
+
+async function hpcLoadLocal(path) {
+  try {
+    const d = await api('/api/hpc/localfiles?path=' + encodeURIComponent(path || '~'));
+    state.hpc.localPath = d.path;
+    state.hpc.localItems = d.items || [];
+    state.hpc.selectedLocal.clear();
+    $('#hpc-local-path').value = d.path;
+    $('#hpc-local-hint').textContent = d.path;
+    renderHpcFileList('local');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function hpcLoadRemote(path) {
+  try {
+    const target = path || state.hpc.remotePath || state.hpc.remoteRoot || '~';
+    const d = await hpcApi('/api/hpc/files?path=' + encodeURIComponent(target));
+    state.hpc.remotePath = d.path;
+    state.hpc.remoteItems = d.items || [];
+    state.hpc.selectedRemote.clear();
+    $('#hpc-remote-path').value = d.path;
+    $('#hpc-remote-hint').textContent = d.path;
+    renderHpcFileList('remote');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadHpcFiles() {
+  if (!state.hpc.token) return;
+  const local = state.hpc.localPath || (state.project && state.project.input_dir) || '~';
+  await Promise.all([hpcLoadLocal(local), hpcLoadRemote(state.hpc.remotePath || state.hpc.remoteRoot || '~')]);
+}
+
+function renderHpcFileList(side) {
+  const local = side === 'local';
+  const list = local ? state.hpc.localItems : state.hpc.remoteItems;
+  const sel = local ? state.hpc.selectedLocal : state.hpc.selectedRemote;
+  const box = $(local ? '#hpc-local-list' : '#hpc-remote-list');
+  if (!list.length) {
+    box.innerHTML = '<div class="hpc-file-empty">空目录</div>';
+  } else {
+    box.innerHTML = list.map(x => {
+      const checked = sel.has(x.path) ? ' checked' : '';
+      const icon = x.is_dir ? '📁' : '📄';
+      const action = local
+        ? (x.is_dir ? '<button class="btn tiny danger" data-hpc-local-delete="' + esc(x.path) + '">删除</button>' : '<button class="btn tiny" data-hpc-upload-one="' + esc(x.path) + '">上传</button><button class="btn tiny danger" data-hpc-local-delete="' + esc(x.path) + '">删除</button>')
+        : '<button class="btn tiny" data-hpc-download-one="' + esc(x.path) + '">下载</button>' +
+          '<button class="btn tiny danger" data-hpc-delete-one="' + esc(x.path) + '">删除</button>';
+      return '<div class="hpc-file-row" data-hpc-side="' + side + '">' +
+        '<input type="checkbox" class="hpc-file-check" data-hpc-check="' + side + '" data-hpc-path="' + esc(x.path) + '"' + checked + '>' +
+        '<div class="hpc-file-main"><span class="hpc-file-icon">' + icon + '</span>' +
+        '<span class="hpc-file-name" data-hpc-dir="' + side + '" data-hpc-path="' + esc(x.path) + '" data-is-dir="' + (x.is_dir ? '1' : '0') + '">' + esc(x.name) + '</span></div>' +
+        '<span class="hpc-file-meta">' + (x.is_dir ? '' : esc(hpcFmtBytes(x.size))) + '</span>' +
+        '<span class="row-actions">' + action + '</span></div>';
+    }).join('');
+  }
+  const count = sel.size;
+  if (local) {
+    $('#hpc-local-selected').textContent = count + ' 个';
+    $('#hpc-upload-selected').disabled = count === 0;
+  } else {
+    $('#hpc-remote-selected').textContent = count + ' 个';
+    $('#hpc-download-selected').disabled = count === 0;
+    $('#hpc-delete-selected').disabled = count === 0;
+  }
+}
+
+function hpcSelectedLocalSize() {
+  return state.hpc.localItems.filter(x => state.hpc.selectedLocal.has(x.path)).reduce((a, x) => a + (x.is_dir ? 0 : x.size), 0);
+}
+
+function hpcUploadModal(paths) {
+  if (!paths.length) { toast('先勾选本地文件', true); return; }
+  const total = state.hpc.localItems.filter(x => paths.indexOf(x.path) >= 0).reduce((a, x) => a + (x.is_dir ? 0 : x.size), 0);
+  const auto = paths.length > 5 || total > 200 * 1024 * 1024;
+  const target = state.hpc.remotePath || state.hpc.remoteRoot || '~';
+  showModal('上传到超算',
+    '<div class="modal-note">从本地选择文件上传到超算。上传目标默认为右侧当前目录。</div>' +
+    '<label>远端目录<input id="hpc-upload-dir" value="' + esc(target) + '"></label>' +
+    '<div class="hpc-upload-list">' + paths.map(p => '<div>' + esc(p) + '</div>').join('') + '</div>' +
+    '<label class="check-line"><input type="checkbox" id="hpc-upload-compress"' + (auto ? ' checked' : '') + '> 压缩上传并自动解压' + (auto ? '（文件多或较大，已自动建议）' : '') + '</label>' +
+    '<div class="hint">总大小约 ' + esc(hpcFmtBytes(total)) + '。压缩会先生成本地 tar.gz，再在远端解压。</div>',
+    '<button class="btn ghost" id="hpc-upload-cancel">取消</button><button class="btn primary" id="hpc-upload-go">上传</button>');
+  $('#hpc-upload-cancel').onclick = closeModal;
+  $('#hpc-upload-go').onclick = async () => {
+    const btn = $('#hpc-upload-go');
+    btn.disabled = true; btn.textContent = '上传中…';
+    try {
+      const d = await hpcApi('/api/hpc/upload', { method: 'POST', body: {
+        local_paths: paths, remote_dir: $('#hpc-upload-dir').value.trim(),
+        compress: $('#hpc-upload-compress').checked,
+      }});
+      closeModal();
+      toast('已上传 ' + d.uploaded + ' 项到 ' + d.remote_dir);
+      await hpcLoadRemote(d.remote_dir);
+    } catch (e) { btn.disabled = false; btn.textContent = '上传'; toast(e.message, true); }
+  };
+}
+
+function hpcDownloadModal(paths) {
+  if (!paths.length) { toast('先勾选超算文件', true); return; }
+  const localDir = state.hpc.localPath || '~';
+  showModal('从超算下载',
+    '<div class="modal-note">下载到本地当前目录。目录会打包下载。</div>' +
+    '<label>本地目录<input id="hpc-download-dir" value="' + esc(localDir) + '"></label>' +
+    '<div class="hpc-upload-list">' + paths.map(p => '<div>' + esc(p) + '</div>').join('') + '</div>' +
+    '<label class="check-line"><input type="checkbox" id="hpc-download-confirm"> 确认下载所有文件，这将包括缓存</label>' +
+    '<div class="hint">下载目录中的 RESTART/wfn 等缓存也会包含在内。</div>',
+    '<button class="btn ghost" id="hpc-download-cancel">取消</button><button class="btn primary" id="hpc-download-go" disabled>下载</button>');
+  $('#hpc-download-cancel').onclick = closeModal;
+  $('#hpc-download-confirm').onchange = () => { $('#hpc-download-go').disabled = !$('#hpc-download-confirm').checked; };
+  $('#hpc-download-go').onclick = async () => {
+    const btn = $('#hpc-download-go');
+    btn.disabled = true; btn.textContent = '下载中…';
+    try {
+      const d = await hpcApi('/api/hpc/download', { method: 'POST', body: {
+        remote_paths: paths, local_dir: $('#hpc-download-dir').value.trim(),
+      }});
+      closeModal();
+      toast('已下载 ' + d.downloaded + ' 项到 ' + d.local_dir);
+      await hpcLoadLocal(d.local_dir);
+    } catch (e) { btn.disabled = false; btn.textContent = '下载'; toast(e.message, true); }
+  };
+}
+
+function hpcDeleteRemote(paths) {
+  if (!paths.length) return;
+  if (!confirm('确定删除超算上的 ' + paths.length + ' 个文件/目录？此操作会直接删除远端文件。')) return;
+  hpcApi('/api/hpc/delete', { method: 'POST', body: { paths } }).then(async () => {
+    toast('已删除');
+    await hpcLoadRemote(state.hpc.remotePath);
+  }).catch(e => toast(e.message, true));
+}
+
+function hpcDeleteLocal(path) {
+  if (!path) return;
+  if (!confirm('把本地文件移到项目 data/trash 回收目录？\n' + path)) return;
+  api('/api/hpc/local-delete', { method: 'POST', body: { paths: [path] } }).then(async (d) => {
+    toast('已移到本地回收目录：' + d.trash);
+    await hpcLoadLocal(state.hpc.localPath);
+  }).catch(e => toast(e.message, true));
+}
+
+function hpcMkdirModal() {
+  const base = state.hpc.remotePath || state.hpc.remoteRoot || '~';
+  showModal('新建远端文件夹',
+    '<label>目录名<input id="hpc-mkdir-name" placeholder="例如 run656"></label>' +
+    '<div class="hint">将在当前目录 ' + esc(base) + ' 下创建。</div>',
+    '<button class="btn ghost" id="hpc-mkdir-cancel">取消</button><button class="btn primary" id="hpc-mkdir-go">创建</button>');
+  $('#hpc-mkdir-cancel').onclick = closeModal;
+  $('#hpc-mkdir-go').onclick = async () => {
+    const name = $('#hpc-mkdir-name').value.trim();
+    if (!name || name.indexOf('/') >= 0 || name === '.' || name === '..') { toast('目录名不合法', true); return; }
+    try {
+      await hpcApi('/api/hpc/mkdir', { method: 'POST', body: { path: base.replace(/\/+$/, '') + '/' + name } });
+      closeModal(); toast('已创建文件夹');
+      await hpcLoadRemote(state.hpc.remotePath);
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function loadHpcTasks(silent) {
+  if (!state.hpc.token) return;
+  try {
+    const d = await hpcApi('/api/hpc/tasks');
+    state.hpc.tasks = d || [];
+    renderHpcTasks();
+    if (!silent) toast('任务列表已刷新', false, 1200);
+  } catch (e) { if (!silent) toast(e.message, true); }
+}
+
+function renderHpcTasks() {
+  const rows = state.hpc.tasks || [];
+  const tb = $('#hpc-tasks-table tbody');
+  $('#hpc-tasks-hint').textContent = rows.length + ' 个任务';
+  tb.innerHTML = rows.map(t => '<tr>' +
+    '<td>' + t.id + '</td><td><b>' + esc(t.name) + '</b></td><td>' + esc(t.input_name) + '</td>' +
+    '<td>' + esc(t.job_id || '—') + '</td>' +
+    '<td><span class="status ' + hpcStateClass(t.status) + '">' + esc(hpcStateText(t.status)) + '</span></td>' +
+    '<td>' + esc(t.cores) + ' / ' + esc(t.nodes) + '</td>' +
+    '<td class="job-actions"><button class="btn small ghost" data-hpc-log="' + t.id + '">日志</button> ' +
+      '<button class="btn small ghost" data-hpc-task-download="' + t.id + '">下载</button> ' +
+      (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'SUBMITTED' ? '<button class="btn small danger" data-hpc-cancel="' + t.id + '">取消</button> ' : '') +
+      '<button class="btn small danger" data-hpc-delete-task="' + t.id + '">删除记录</button></td></tr>').join('') ||
+    '<tr><td colspan="7" class="empty">还没有超算任务。</td></tr>';
+  const lb = $('#hpc-task-logs-table tbody');
+  lb.innerHTML = rows.map(t => '<tr>' +
+    '<td>' + esc(t.name) + '</td><td>' + esc(t.job_id || '—') + '</td>' +
+    '<td><span class="status ' + hpcStateClass(t.status) + '">' + esc(hpcStateText(t.status)) + '</span></td>' +
+    '<td><code>' + esc(t.log_path || '—') + '</code></td>' +
+    '<td class="job-actions"><button class="btn small ghost" data-hpc-log="' + t.id + '">预览</button> ' +
+      '<button class="btn small ghost" data-hpc-task-download="' + t.id + '">下载</button></td></tr>').join('') ||
+    '<tr><td colspan="5" class="empty">还没有任务日志。</td></tr>';
+}
+
+async function openHpcNewTask() {
+  if (!state.hpc.token) return;
+  const dir = state.hpc.remotePath || state.hpc.remoteRoot || '~';
+  let files = [];
+  try {
+    const d = await hpcApi('/api/hpc/files?path=' + encodeURIComponent(dir));
+    files = (d.items || []).filter(x => !x.is_dir && /\.(inp|in)$/i.test(x.name));
+  } catch (e) { toast(e.message, true); return; }
+  if (!files.length) { toast('当前远端目录没有 .inp 输入文件，请先切换目录或上传', true); return; }
+  showModal('新建 CP2K 任务',
+    '<label>任务名称<input id="hpc-task-name" placeholder="留空则用输入文件名 + cp2k"></label>' +
+    '<label>输入文件<select id="hpc-task-input">' + files.map(f => '<option value="' + esc(f.path) + '">' + esc(f.name) + '</option>').join('') + '</select></label>' +
+    '<div class="form-row"><label>每节点核数<input id="hpc-task-cores" type="number" value="4" min="1" max="512"></label>' +
+    '<label>节点数<input id="hpc-task-nodes" type="number" value="1" min="1" max="64"></label></div>' +
+    '<div class="hint">输出/日志：任务目录（ifmccp2k 固定写入当前目录）。输入文件目录：' + esc(dir) + '；任务目录会自动创建。</div>',
+    '<button class="btn ghost" id="hpc-task-cancel">取消</button><button class="btn primary" id="hpc-task-submit">提交计算</button>');
+  $('#hpc-task-cancel').onclick = closeModal;
+  $('#hpc-task-submit').onclick = async () => {
+    const btn = $('#hpc-task-submit');
+    btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const d = await hpcApi('/api/hpc/tasks', { method: 'POST', body: {
+        name: $('#hpc-task-name').value.trim(),
+        input_path: $('#hpc-task-input').value,
+        cores: Number($('#hpc-task-cores').value) || 4,
+        nodes: Number($('#hpc-task-nodes').value) || 1,
+        remote_root: state.hpc.remoteRoot,
+      }});
+      closeModal(); toast('已提交，Job ID ' + d.job_id);
+      await loadHpcTasks(true);
+    } catch (e) { btn.disabled = false; btn.textContent = '提交计算'; toast(e.message, true); }
+  };
+}
+
+async function openHpcLog(id) {
+  const t = (state.hpc.tasks || []).find(x => x.id === Number(id));
+  if (!t) return;
+  showModal('任务日志 · ' + t.name, '<pre class="log-box" id="hpc-log-box">加载中…</pre>', '<button class="btn ghost" id="hpc-log-close">关闭</button><button class="btn" id="hpc-log-download">下载任务目录</button>');
+  $('#hpc-log-close').onclick = closeModal;
+  $('#hpc-log-download').onclick = () => { closeModal(); hpcDownloadModal([t.remote_dir]); };
+  try {
+    const d = await hpcApi('/api/hpc/tasks/' + t.id + '/log');
+    const pre = $('#hpc-log-box');
+    if (pre) pre.textContent = d.text || '(空)';
+  } catch (e) {
+    const pre = $('#hpc-log-box');
+    if (pre) pre.textContent = e.message;
+  }
+}
+
+function hpcDeleteTaskModal(id) {
+  const t = (state.hpc.tasks || []).find(x => x.id === Number(id));
+  if (!t) return;
+  showModal('删除任务记录',
+    '<div class="modal-note">删除任务列表记录不会自动删除超算文件。</div>' +
+    '<div class="confirm-summary"><div><span>任务</span><b>' + esc(t.name) + '</b></div><div><span>远端目录</span><code>' + esc(t.remote_dir || '—') + '</code></div></div>' +
+    '<label class="check-line"><input type="checkbox" id="hpc-delete-files"> 同时删除超算任务目录（不可恢复）</label>' +
+    '<div class="hint">不勾选时只删除本地任务列表记录，Slurm 作业和远端文件保持不动。</div>',
+    '<button class="btn ghost" id="hpc-delete-cancel">取消</button><button class="btn danger" id="hpc-delete-go">删除</button>');
+  $('#hpc-delete-cancel').onclick = closeModal;
+  $('#hpc-delete-go').onclick = async () => {
+    try {
+      await hpcApi('/api/hpc/tasks/' + t.id + '/delete', { method: 'POST', body: { delete_files: $('#hpc-delete-files').checked } });
+      closeModal(); toast('任务记录已删除');
+      await loadHpcTasks(true);
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function cancelHpcTask(id) {
+  if (!confirm('取消这个 Slurm 任务？')) return;
+  try {
+    await hpcApi('/api/hpc/tasks/' + id + '/cancel', { method: 'POST', body: {} });
+    toast('已发送取消');
+    await loadHpcTasks(true);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function saveHpcSettings() {
+  const body = {
+    hpc_host: $('#hpc-set-host').value.trim(),
+    hpc_port: Number($('#hpc-set-port').value) || 22,
+    hpc_user: $('#hpc-set-user').value.trim(),
+    hpc_remote_root: $('#hpc-set-root').value.trim(),
+    hpc_refresh_s: Number($('#hpc-set-refresh').value) || 60,
+  };
+  try {
+    state.settings = await api('/api/settings', { method: 'POST', body });
+    state.hpc.host = body.hpc_host; state.hpc.port = body.hpc_port; state.hpc.user = body.hpc_user; state.hpc.remoteRoot = body.hpc_remote_root;
+    applyHpcSettings();
+    hpcSettingsStatus('设置已保存');
+    toast('超算设置已保存');
+  } catch (e) { hpcSettingsStatus(e.message, true); }
+}
+
+function hpcTestSettings() {
+  const host = $('#hpc-set-host').value.trim();
+  const port = Number($('#hpc-set-port').value) || 22;
+  const user = $('#hpc-set-user').value.trim();
+  showModal('测试超算连接',
+    '<div class="modal-note">密码只用于本次测试，不会保存。</div>' +
+    '<label>密码<input id="hpc-test-password" type="password"></label>',
+    '<button class="btn ghost" id="hpc-test-cancel">取消</button><button class="btn primary" id="hpc-test-go">测试</button>');
+  $('#hpc-test-cancel').onclick = closeModal;
+  $('#hpc-test-go').onclick = async () => {
+    const pw = $('#hpc-test-password').value;
+    if (!pw) return;
+    try {
+      const d = await api('/api/hpc/test', { method: 'POST', body: { host, port, user, password: pw } });
+      closeModal();
+      hpcSettingsStatus('连接成功：' + d.hostname + ' · ' + d.fingerprint);
+    } catch (e) { hpcSettingsStatus(e.message, true); }
+  };
+}
+
+async function hpcLogout() {
+  if (!confirm('退出超算账号？密码不会保留，下次需要重新输入。')) return;
+  try { await hpcApi('/api/hpc/logout', { method: 'POST', body: {} }); } catch (e) {}
+  state.hpc.token = null; state.hpc.dashboard = null; state.hpc.tasks = []; state.hpc.remoteItems = [];
+  $('#hpc-password').value = '';
+  switchView('hpc-login');
+  toast('已退出超算');
+}
+
+function startHpcTimer(name) {
+  if (state.hpc.timer) { clearInterval(state.hpc.timer); state.hpc.timer = null; }
+  if (!state.hpc.token) return;
+  if (name !== 'hpc-dashboard' && name !== 'hpc-tasks') return;
+  const sec = Math.max(15, Number(state.settings.hpc_refresh_s || 60));
+  state.hpc.timer = setInterval(() => {
+    if (document.hidden) return;
+    if (name === 'hpc-dashboard') refreshHpcDashboard(true);
+    if (name === 'hpc-tasks') loadHpcTasks(true);
+  }, sec * 1000);
 }
 
 function bind() {
@@ -1416,8 +1983,95 @@ function bind() {
   }, { passive: true });
   document.documentElement.addEventListener('mouseleave', () => { ambient.mouse.inside = false; });
   window.addEventListener('resize', () => { if (ambient.mode) ambient.resize(); });
+  $$('.workspace-btn').forEach(b => b.onclick = () => switchWorkspace(b.dataset.workspace));
   $$('.nav-item').forEach(b => b.onclick = () => switchView(b.dataset.view));
   $$('[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.jump));
+  if ($('#hpc-login-form')) $('#hpc-login-form').onsubmit = hpcLogin;
+  if ($('#hpc-test')) $('#hpc-test').onclick = hpcTestLogin;
+  if ($('#hpc-refresh-dashboard')) $('#hpc-refresh-dashboard').onclick = () => refreshHpcDashboard(false);
+  if ($('#hpc-refresh-tasks')) $('#hpc-refresh-tasks').onclick = () => loadHpcTasks(false);
+  if ($('#hpc-new-task')) $('#hpc-new-task').onclick = openHpcNewTask;
+  if ($('#hpc-new-tool')) $('#hpc-new-tool').onclick = () => toast('还没做呢', false, 1200);
+  if ($('#hpc-save-settings')) $('#hpc-save-settings').onclick = saveHpcSettings;
+  if ($('#hpc-test-settings')) $('#hpc-test-settings').onclick = hpcTestSettings;
+  if ($('#hpc-logout')) $('#hpc-logout').onclick = hpcLogout;
+
+  if ($('#hpc-local-go')) $('#hpc-local-go').onclick = () => hpcLoadLocal($('#hpc-local-path').value.trim());
+  if ($('#hpc-local-pick')) $('#hpc-local-pick').onclick = async () => {
+    try {
+      const d = await api('/api/pick-path', { method: 'POST', body: { kind: 'dir', title: '选择本地目录' } });
+      if (!d.cancelled) hpcLoadLocal(d.path);
+    } catch (e) { toast(e.message, true); }
+  };
+  if ($('#hpc-remote-go')) $('#hpc-remote-go').onclick = () => hpcLoadRemote($('#hpc-remote-path').value.trim());
+  if ($('#hpc-remote-up')) $('#hpc-remote-up').onclick = () => {
+    const p = state.hpc.remotePath || state.hpc.remoteRoot || '~';
+    const parts = p.replace(/\/+$/, '').split('/');
+    parts.pop();
+    hpcLoadRemote(parts.join('/') || '/');
+  };
+  if ($('#hpc-new-folder')) $('#hpc-new-folder').onclick = hpcMkdirModal;
+  if ($('#hpc-upload-selected')) $('#hpc-upload-selected').onclick = () => hpcUploadModal(Array.from(state.hpc.selectedLocal));
+  if ($('#hpc-download-selected')) $('#hpc-download-selected').onclick = () => hpcDownloadModal(Array.from(state.hpc.selectedRemote));
+  if ($('#hpc-delete-selected')) $('#hpc-delete-selected').onclick = () => hpcDeleteRemote(Array.from(state.hpc.selectedRemote));
+
+  const hpcList = (side) => $(side === 'local' ? '#hpc-local-list' : '#hpc-remote-list');
+  if (hpcList('local')) hpcList('local').onchange = (e) => {
+    const cb = e.target.closest('[data-hpc-check]');
+    if (!cb) return;
+    const set = state.hpc.selectedLocal;
+    if (cb.checked) set.add(cb.dataset.hpcPath); else set.delete(cb.dataset.hpcPath);
+    const row = cb.closest('.hpc-file-row'); if (row) row.classList.toggle('selected', cb.checked);
+    renderHpcFileList('local');
+  };
+  if (hpcList('remote')) hpcList('remote').onchange = (e) => {
+    const cb = e.target.closest('[data-hpc-check]');
+    if (!cb) return;
+    const set = state.hpc.selectedRemote;
+    if (cb.checked) set.add(cb.dataset.hpcPath); else set.delete(cb.dataset.hpcPath);
+    const row = cb.closest('.hpc-file-row'); if (row) row.classList.toggle('selected', cb.checked);
+    renderHpcFileList('remote');
+  };
+  const hpcClick = (e) => {
+    const btn = e.target.closest('button');
+    if (btn) {
+      if (btn.dataset.hpcUploadOne) hpcUploadModal([btn.dataset.hpcUploadOne]);
+      if (btn.dataset.hpcDownloadOne) hpcDownloadModal([btn.dataset.hpcDownloadOne]);
+      if (btn.dataset.hpcDeleteOne) hpcDeleteRemote([btn.dataset.hpcDeleteOne]);
+      if (btn.dataset.hpcLocalDelete) hpcDeleteLocal([btn.dataset.hpcLocalDelete]);
+      return;
+    }
+    const name = e.target.closest('[data-hpc-dir]');
+    if (name && name.dataset.isDir === '1') {
+      if (name.dataset.hpcDir === 'local') hpcLoadLocal(name.dataset.hpcPath);
+      else hpcLoadRemote(name.dataset.hpcPath);
+    }
+  };
+  if (hpcList('local')) hpcList('local').onclick = hpcClick;
+  if (hpcList('remote')) hpcList('remote').onclick = hpcClick;
+
+  const hpcTaskTable = $('#hpc-tasks-table');
+  if (hpcTaskTable) hpcTaskTable.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.hpcLog) openHpcLog(Number(b.dataset.hpcLog));
+    if (b.dataset.hpcCancel) cancelHpcTask(Number(b.dataset.hpcCancel));
+    if (b.dataset.hpcDeleteTask) hpcDeleteTaskModal(Number(b.dataset.hpcDeleteTask));
+    if (b.dataset.hpcTaskDownload) {
+      const t = (state.hpc.tasks || []).find(x => x.id === Number(b.dataset.hpcTaskDownload));
+      if (t && t.remote_dir) hpcDownloadModal([t.remote_dir]);
+    }
+  };
+  const hpcLogTable = $('#hpc-task-logs-table');
+  if (hpcLogTable) hpcLogTable.onclick = (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.hpcLog) openHpcLog(Number(b.dataset.hpcLog));
+    if (b.dataset.hpcTaskDownload) {
+      const t = (state.hpc.tasks || []).find(x => x.id === Number(b.dataset.hpcTaskDownload));
+      if (t && t.remote_dir) hpcDownloadModal([t.remote_dir]);
+    }
+  };
   $$('[data-pick-kind]').forEach(b => b.onclick = () => pickPath(b.dataset.pickKind, b.dataset.pickTarget, b.dataset.pickTitle));
   $('#project-form').onsubmit = createProject;
   $('#scan-btn').onclick = scanProject;
@@ -1521,6 +2175,7 @@ async function boot() {
     await refreshJobs();
     await refreshResults();
     await loadTutorial('README.md');
+    switchWorkspace(state.workspace);
   } catch (e) {
     updateServer(false);
     toast('初始化失败：' + e.message, true);

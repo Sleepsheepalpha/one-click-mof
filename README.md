@@ -16,6 +16,28 @@
 - QE 单点、局部弛豫、运行已有输入
 - MD 分析：MSD、扩散系数、RDF、稳定性
 - 运行队列、实时日志、结果筛选、CSV 导出
+- 超算工作区：SSH 登录、Slurm 仪表盘、文件上传/下载、CP2K 任务提交与日志预览
+
+## 超算工作区
+
+网页通过本机 Python 后端 SSH 到超算登录节点，浏览器不直接连接超算。
+
+- Paramiko 是 Python 包，不需要单独下载 Xshell。在项目虚拟环境中执行 pip install -r requirements.txt 会安装 Paramiko 和 cryptography；Windows 原生 Python 环境同理。
+- Xshell 仍然可以用于手动排错，但网页不调用 Xshell。
+- 登录密码只保存在后端内存中，不写入 SQLite、settings.json、localStorage 或日志；刷新/重新打开页面后需要重新输入密码。
+- 连接设置会保存主机、端口、用户名和远程工作根目录，不保存密码。
+- 仪表盘默认 60 秒刷新；页面隐藏时暂停。
+- 文件传输使用 SFTP；远端有 rsync 时优先增量传输。
+- CP2K 任务使用登录节点上的 /usr/bin/ifmccp2k；参数是“每节点核数”和“节点数”，输出/日志写入任务目录。
+
+Windows 原生运行时需要保证：
+
+1. 有线网卡能到达 HPC 网段；
+2. WiFi 仍保留默认路由；
+3. Python 环境已安装 Paramiko；
+4. 不需要 WSL2，也不需要 Xshell。
+
+Windows 下可以直接双击 `one_click_mof/start.bat`，它会启动本地服务并打开浏览器；Linux 下使用 `one_click_mof/start.sh`。
 
 ## 系统要求
 
