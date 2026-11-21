@@ -180,19 +180,11 @@
 
     <!-- 工具 -->
     <section class="view" id="view-tools">
-      <div class="section-intro">
-        <h2>工具清单</h2>
-        <p>每个工具默认收起，点标题展开参数。这里的默认值会保存在浏览器里，下次打开仍然有效。</p>
-      </div>
       <div id="tools-grid" class="tools-grid"></div>
     </section>
 
     <!-- 运行 -->
     <section class="view" id="view-runs">
-      <div class="section-intro">
-        <h2>运行队列</h2>
-        <p>单机默认串行执行，避免几个 QE 同时抢内存。默认保留完整日志和目录；可在任务行或“结果与筛选”里删除记录。</p>
-      </div>
       <div class="card">
         <div class="card-head">
           <h2>任务</h2>
@@ -215,10 +207,6 @@
 
     <!-- 结果 -->
     <section class="view" id="view-results">
-      <div class="section-intro">
-        <h2>结果与筛选</h2>
-        <p>筛选只改变显示和导出。点击表头可排序；每行可看日志或删除记录，并在同一个弹窗里选择是否清理缓存/输出。</p>
-      </div>
       <div class="card">
         <div class="card-head">
           <h2>指标表</h2>
@@ -252,10 +240,6 @@
     <section class="view" id="view-hpc-login">
       <div class="hpc-login-wrap">
         <div class="card hpc-login-card">
-          <div class="section-intro">
-            <h2>连接超算</h2>
-            <p>密码只用于本次网页会话，不写入磁盘。关闭页面或退出后需要重新输入。</p>
-          </div>
           <form id="hpc-login-form" class="hpc-form">
             <label>登录节点<input id="hpc-host" placeholder="例如 192.9.207.186" autocomplete="off" required></label>
             <label>SSH 端口<input id="hpc-port" type="number" value="22" min="1" max="65535" required></label>
@@ -274,10 +258,6 @@
 
     <!-- 超算：仪表盘 -->
     <section class="view" id="view-hpc-dashboard">
-      <div class="section-intro">
-        <h2>超算仪表盘</h2>
-        <p id="hpc-dash-sub">登录后加载集群状态。</p>
-      </div>
       <div class="hpc-dash-grid">
         <div class="card hpc-metric"><span>节点</span><b id="hpc-metric-nodes">—</b><small id="hpc-metric-nodes-sub">alloc / mix / idle</small></div>
         <div class="card hpc-metric"><span>队列</span><b id="hpc-metric-queue">—</b><small id="hpc-metric-queue-sub">running / pending</small></div>
@@ -299,10 +279,6 @@
 
     <!-- 超算：文件 -->
     <section class="view" id="view-hpc-files">
-      <div class="section-intro">
-        <h2>项目与文件</h2>
-        <p>左侧本地文件，右侧超算文件。上传目标默认为右侧当前目录。</p>
-      </div>
       <div class="hpc-files-grid">
         <div class="card hpc-file-pane">
           <div class="card-head"><div><h2>本地</h2><span class="hint" id="hpc-local-hint">—</span></div></div>
@@ -322,10 +298,6 @@
 
     <!-- 超算：任务 -->
     <section class="view" id="view-hpc-tasks">
-      <div class="section-intro">
-        <h2>任务</h2>
-        <p>提交 CP2K 任务并查看 Slurm 队列。任务列表删除与远端文件删除是两件事。</p>
-      </div>
       <div class="card">
         <div class="card-head">
           <div><h2>队列</h2><span class="hint" id="hpc-tasks-hint">—</span></div>
@@ -341,7 +313,6 @@
 
     <!-- 超算：工具设置 -->
     <section class="view" id="view-hpc-tools">
-      <div class="section-intro"><h2>工具设置</h2><p>超算端可用的计算工具。第一版只有 CP2K。</p></div>
       <div class="card hpc-tool-card">
         <div class="card-head"><div><h2>CP2K 2023.2</h2><span class="hint">/opt/soft/cp2k-2023.2</span></div><span class="tag">Slurm</span></div>
         <div class="hpc-tool-grid">
@@ -357,7 +328,6 @@
 
     <!-- 超算：通用设置 -->
     <section class="view" id="view-hpc-settings">
-      <div class="section-intro"><h2>通用设置</h2><p>连接信息保存到本机设置文件，密码不保存。</p></div>
       <div class="card">
         <div class="form-row">
           <label>登录节点<input id="hpc-set-host" placeholder="192.9.207.186"></label>
@@ -388,10 +358,6 @@
 
     <!-- 设置 -->
     <section class="view" id="view-settings">
-      <div class="section-intro">
-        <h2>路径设置</h2>
-        <p>每个工具一张卡片，默认收起；展开后看本地路径、版本，可更改路径、自动检测或下载。</p>
-      </div>
       <div class="settings-cards" id="settings-cards"></div>
       <div class="form-actions">
         <button class="btn primary" id="save-settings">保存</button>

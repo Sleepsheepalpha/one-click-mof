@@ -1608,7 +1608,7 @@ function renderHpcDashboard() {
   $('#hpc-metric-queue-sub').textContent = 'running / pending';
   $('#hpc-metric-mem').textContent = hpcFmtMem(t.free_mem_mb || 0);
   $('#hpc-metric-mine').textContent = (d.user_jobs || []).length;
-  $('#hpc-dash-sub').textContent = d.user + '@' + d.host + ' · 刷新于 ' + new Date((d.fetched_at || 0) * 1000).toLocaleTimeString();
+  $('#page-sub').textContent = d.user + '@' + d.host + ' · 刷新于 ' + new Date((d.fetched_at || 0) * 1000).toLocaleTimeString();
   $('#hpc-nodes-hint').textContent = (d.nodes || []).length + ' 个节点 · 共 ' + (t.cpus || 0) + ' 核';
   const nb = $('#hpc-nodes-table tbody');
   nb.innerHTML = (d.nodes || []).map(n => '<tr>' +
