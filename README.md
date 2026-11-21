@@ -30,6 +30,8 @@
 - 文件传输使用 SFTP；远端有 rsync 时优先增量传输。
 - CP2K 任务使用登录节点上的 /usr/bin/ifmccp2k；参数是“每节点核数”和“节点数”，输出/日志写入任务目录。
 
+> 这里的 Windows 原生说明针对超算工作区（SSH/SFTP）。本地 QE 计算在 Windows 上仍需 QE/MS-MPI 适配；本轮未做完整 Windows 本地计算包。
+
 Windows 原生运行时需要保证：
 
 1. 有线网卡能到达 HPC 网段；
