@@ -21,6 +21,7 @@ const state = {
     token: null, host: '', port: 22, user: '', home: '', remoteRoot: '',
     dashboard: null, localPath: '', remotePath: '', localItems: [], remoteItems: [],
     selectedLocal: new Set(), selectedRemote: new Set(), tasks: [], timer: null,
+    previewTimer: null, previewKey: '',
     fingerprint: '',
   },
 };
@@ -34,7 +35,7 @@ const TITLES = {
   settings: ['路径设置', '每个工具一张卡片；查看版本、路径，自动检测或下载。'],
   'hpc-login': ['连接超算', '通过 SSH 登录节点查看集群并提交任务。密码只用于本次会话。'],
   'hpc-dashboard': ['超算仪表盘', '节点、队列和自己的 Slurm 任务。'],
-  'hpc-files': ['项目与文件', '本地文件与超算文件，支持上传、下载、建目录和删除。'],
+  'hpc-files': ['项目与文件', '本地文件与超算文件，支持上传、下载、网页预览、建目录和删除。'],
   'hpc-tasks': ['任务', '提交 CP2K 任务，查看队列与日志。'],
   'hpc-tools': ['工具设置', '超算端可用的计算工具。'],
   'hpc-settings': ['通用设置', '超算连接、远程根目录和刷新间隔。'],
@@ -744,7 +745,16 @@ async function createProject(ev) {
   } catch (e) { toast(e.message, true); }
 }
 
+function clearHpcPreviewTimer() {
+  if (state.hpc && state.hpc.previewTimer) {
+    clearInterval(state.hpc.previewTimer);
+    state.hpc.previewTimer = null;
+  }
+  if (state.hpc) state.hpc.previewKey = '';
+}
+
 function showModal(title, body, foot) {
+  clearHpcPreviewTimer();
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = body;
   $('#modal-foot').innerHTML = foot || '<button class="btn ghost" id="modal-close-2">关闭</button>';
@@ -755,6 +765,7 @@ function showModal(title, body, foot) {
 
 function closeModal() {
   $('#modal').classList.add('hidden');
+  clearHpcPreviewTimer();
   if (state.logTimer) { clearInterval(state.logTimer); state.logTimer = null; }
 }
 
@@ -1668,7 +1679,8 @@ function renderHpcFileList(side) {
       const icon = x.is_dir ? '📁' : '📄';
       const action = local
         ? (x.is_dir ? '<button class="btn tiny danger" data-hpc-local-delete="' + esc(x.path) + '">删除</button>' : '<button class="btn tiny" data-hpc-upload-one="' + esc(x.path) + '">上传</button><button class="btn tiny danger" data-hpc-local-delete="' + esc(x.path) + '">删除</button>')
-        : '<button class="btn tiny" data-hpc-download-one="' + esc(x.path) + '">下载</button>' +
+        : '<button class="btn tiny" data-hpc-preview="' + esc(x.path) + '">预览</button>' +
+          '<button class="btn tiny" data-hpc-download-one="' + esc(x.path) + '">下载</button>' +
           '<button class="btn tiny danger" data-hpc-delete-one="' + esc(x.path) + '">删除</button>';
       return '<div class="hpc-file-row" data-hpc-side="' + side + '">' +
         '<input type="checkbox" class="hpc-file-check" data-hpc-check="' + side + '" data-hpc-path="' + esc(x.path) + '"' + checked + '>' +
@@ -1849,6 +1861,103 @@ async function openHpcNewTask() {
       await loadHpcTasks(true);
     } catch (e) { btn.disabled = false; btn.textContent = '提交计算'; toast(e.message, true); }
   };
+}
+
+function hpcBasename(p) {
+  const parts = String(p || '').split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(p || '');
+}
+
+function hpcPreviewMeta(d) {
+  const bits = [(d.kind === 'image' ? '图片' : '文本') + ' · ' + hpcFmtBytes(d.size)];
+  if (d.mtime) bits.push(new Date(d.mtime * 1000).toLocaleString());
+  if (d.kind === 'text') bits.push(d.mode === 'head' ? '显示开头' : '显示末尾');
+  if (d.truncated) bits.push('大文件已截断');
+  return bits.join(' · ');
+}
+
+function hpcPreviewLive(path) {
+  return /\.(log|out|err)$/i.test(path) || /\.o\d+$/i.test(path);
+}
+
+function hpcOpenPreview(path, name) {
+  const base = name || hpcBasename(path);
+  const live = hpcPreviewLive(path);
+  let mode = 'tail';
+  let firstLoad = true;
+  showModal('文件预览 · ' + base,
+    '<div class="hpc-preview-meta" id="hpc-preview-meta">正在读取远端文件…</div>' +
+    '<div id="hpc-preview-content"><pre class="log-box hpc-preview-box">加载中…</pre></div>',
+    '<button class="btn ghost" id="hpc-preview-close">关闭</button>' +
+    '<button class="btn ghost" id="hpc-preview-refresh">刷新</button>' +
+    '<button class="btn ghost" id="hpc-preview-mode">查看开头</button>' +
+    '<button class="btn" id="hpc-preview-download">下载</button>');
+  const key = path + '|' + Date.now() + '|' + Math.random();
+  state.hpc.previewKey = key;
+
+  const load = async (initial) => {
+    try {
+      const d = await hpcApi('/api/hpc/files/preview?path=' + encodeURIComponent(path) +
+        '&mode=' + mode + '&lines=400');
+      if (state.hpc.previewKey !== key) return;
+      const meta = $('#hpc-preview-meta');
+      const content = $('#hpc-preview-content');
+      if (!meta || !content) return;
+      const oldPre = content.querySelector('.hpc-preview-box');
+      const keepTop = oldPre ? oldPre.scrollTop : 0;
+      const atBottom = oldPre ? (oldPre.scrollHeight - oldPre.scrollTop - oldPre.clientHeight < 12) : true;
+      meta.textContent = hpcPreviewMeta(d) + (live && d.kind === 'text' ? ' · 自动刷新' : '');
+      content.innerHTML = '';
+      if (d.kind === 'image') {
+        const img = document.createElement('img');
+        img.className = 'hpc-preview-img';
+        img.alt = base;
+        img.src = 'data:' + d.mime + ';base64,' + d.data;
+        content.appendChild(img);
+      } else {
+        const pre = document.createElement('pre');
+        pre.className = 'log-box hpc-preview-box';
+        pre.textContent = d.text || '(空文件)';
+        content.appendChild(pre);
+        if (firstLoad || atBottom) pre.scrollTop = pre.scrollHeight;
+        else pre.scrollTop = keepTop;
+        if (live && !state.hpc.previewTimer) {
+          state.hpc.previewTimer = setInterval(() => { if (!document.hidden) load(false); }, 3000);
+        }
+      }
+      firstLoad = false;
+      const modeBtn = $('#hpc-preview-mode');
+      if (modeBtn) {
+        modeBtn.disabled = d.kind === 'image';
+        modeBtn.textContent = mode === 'tail' ? '查看开头' : '查看末尾';
+      }
+    } catch (e) {
+      if (state.hpc.previewKey !== key) return;
+      const meta = $('#hpc-preview-meta');
+      const content = $('#hpc-preview-content');
+      if (meta) meta.textContent = path;
+      if (content) {
+        content.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.className = 'log-box hpc-preview-box';
+        pre.textContent = e.message;
+        content.appendChild(pre);
+      }
+      const modeBtn = $('#hpc-preview-mode');
+      if (modeBtn) modeBtn.disabled = true;
+    }
+  };
+
+  $('#hpc-preview-close').onclick = closeModal;
+  $('#hpc-preview-refresh').onclick = () => load(false);
+  $('#hpc-preview-mode').onclick = () => {
+    mode = mode === 'tail' ? 'head' : 'tail';
+    $('#hpc-preview-mode').textContent = mode === 'tail' ? '查看开头' : '查看末尾';
+    firstLoad = true;
+    load(false);
+  };
+  $('#hpc-preview-download').onclick = () => { closeModal(); hpcDownloadModal([path]); };
+  load(true);
 }
 
 async function openHpcLog(id) {
@@ -2036,6 +2145,7 @@ function bind() {
     const btn = e.target.closest('button');
     if (btn) {
       if (btn.dataset.hpcUploadOne) hpcUploadModal([btn.dataset.hpcUploadOne]);
+      if (btn.dataset.hpcPreview) hpcOpenPreview(btn.dataset.hpcPreview);
       if (btn.dataset.hpcDownloadOne) hpcDownloadModal([btn.dataset.hpcDownloadOne]);
       if (btn.dataset.hpcDeleteOne) hpcDeleteRemote([btn.dataset.hpcDeleteOne]);
       if (btn.dataset.hpcLocalDelete) hpcDeleteLocal([btn.dataset.hpcLocalDelete]);
@@ -2045,6 +2155,8 @@ function bind() {
     if (name && name.dataset.isDir === '1') {
       if (name.dataset.hpcDir === 'local') hpcLoadLocal(name.dataset.hpcPath);
       else hpcLoadRemote(name.dataset.hpcPath);
+    } else if (name && name.dataset.hpcDir === 'remote') {
+      hpcOpenPreview(name.dataset.hpcPath);
     }
   };
   if (hpcList('local')) hpcList('local').onclick = hpcClick;

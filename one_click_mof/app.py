@@ -1132,6 +1132,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, hpc.list_remote(s, q.get("path", [""])[0], q.get("hidden", ["0"])[0] == "1"))
                 except hpc.HpcError as exc:
                     return self._send(400, {"error": str(exc)})
+            if path == "/api/hpc/files/preview":
+                try:
+                    s = self._hpc()
+                    return self._send(200, hpc.preview_remote(
+                        s, q.get("path", [""])[0],
+                        q.get("lines", ["400"])[0], q.get("mode", ["tail"])[0],
+                    ))
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
             if path == "/api/hpc/dashboard":
                 try:
                     s = self._hpc()

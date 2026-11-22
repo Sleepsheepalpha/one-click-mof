@@ -388,6 +388,90 @@ def read_log(session, path, lines=200):
     return {"path": p, "text": r["out"]}
 
 
+PREVIEW_TEXT_BYTES = 512 * 1024
+PREVIEW_IMAGE_BYTES = 5 * 1024 * 1024
+_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def preview_remote(session, path, lines=400, mode="tail"):
+    """Return a size-limited text or image preview of one remote file.
+
+    Text previews are read directly over SFTP so the browser does not need a
+    download step.  Only the requested end of large files is transferred, and
+    output is capped so opening a multi-GB CP2K log stays cheap.
+    """
+    p = _require_home(session, path)
+    mode = "head" if str(mode).lower() == "head" else "tail"
+    try:
+        lines = max(1, min(int(lines), 5000))
+    except (TypeError, ValueError):
+        lines = 400
+    sftp = session.sftp()
+    try:
+        st = sftp.stat(p)
+        if stat.S_ISDIR(st.st_mode or 0):
+            raise HpcError("这是目录，不能按文件预览")
+        size = int(st.st_size or 0)
+        mtime = int(st.st_mtime or 0)
+        ext = posixpath.splitext(p)[1].lower()
+        mime = _IMAGE_TYPES.get(ext)
+        if mime:
+            if size > PREVIEW_IMAGE_BYTES:
+                raise HpcError("图片超过 5 MB，请下载后查看")
+            with sftp.open(p, "rb") as fh:
+                raw = fh.read()
+            return {
+                "kind": "image", "path": p, "size": size, "mtime": mtime,
+                "mime": mime, "data": base64.b64encode(raw).decode("ascii"),
+                "truncated": False, "mode": mode,
+            }
+
+        offset = max(0, size - PREVIEW_TEXT_BYTES) if mode == "tail" else 0
+        with sftp.open(p, "rb") as fh:
+            if offset:
+                fh.seek(offset)
+            raw = fh.read(PREVIEW_TEXT_BYTES)
+        sample = raw[:8192]
+        if b"\x00" in sample:
+            raise HpcError("这是二进制文件，不能在网页内预览；请下载后查看")
+        control = sum(1 for b in sample if b < 9 or 13 < b < 32)
+        if sample and control / len(sample) > 0.10:
+            raise HpcError("这是二进制文件，不能在网页内预览；请下载后查看")
+
+        text = raw.decode("utf-8", "replace")
+        clipped = False
+        if offset:
+            cut = text.find("\n")
+            if cut >= 0:
+                text = text[cut + 1:]
+            text = "…（文件较大，前文已省略）\n" + text
+        all_lines = text.splitlines()
+        if len(all_lines) > lines:
+            clipped = True
+            kept = all_lines[-lines:] if mode == "tail" else all_lines[:lines]
+            label = "最后" if mode == "tail" else "前"
+            text = "…（仅显示%s %d 行）\n" % (label, lines) + "\n".join(kept)
+        else:
+            text = "\n".join(all_lines)
+        return {
+            "kind": "text", "path": p, "size": size, "mtime": mtime,
+            "text": text, "mode": mode, "lines": lines,
+            "truncated": bool(offset or clipped),
+        }
+    except HpcError:
+        raise
+    except Exception as exc:
+        raise HpcError("预览远端文件失败：" + str(exc))
+    finally:
+        sftp.close()
+
+
 def dashboard(session):
     cmd = (
         "sinfo -N -h -o '%P|%n|%t|%c|%m|%e|%O'; "
