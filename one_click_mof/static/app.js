@@ -1733,16 +1733,38 @@ function hpcUploadModal(paths) {
   };
 }
 
-function hpcDownloadModal(paths) {
+async function hpcDownloadDirect(paths, trigger) {
   if (!paths.length) { toast('先勾选超算文件', true); return; }
   const localDir = state.hpc.localPath || '~';
-  showModal('从超算下载',
-    '<div class="modal-note">下载到本地当前目录。目录会打包下载。</div>' +
-    '<label>本地目录<input id="hpc-download-dir" value="' + esc(localDir) + '"></label>' +
+  const oldText = trigger ? trigger.textContent : '';
+  if (trigger) { trigger.disabled = true; trigger.textContent = '下载中…'; }
+  toast('正在打包下载 ' + paths.length + ' 项到 ' + localDir + '…', false, 6000);
+  try {
+    const d = await hpcApi('/api/hpc/download', { method: 'POST', body: {
+      remote_paths: paths, local_dir: localDir, compress: true,
+    }});
+    toast('已下载 ' + d.downloaded + ' 项到 ' + d.local_dir);
+    await hpcLoadLocal(d.local_dir);
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (trigger) {
+      trigger.textContent = oldText;
+      trigger.disabled = trigger.id === 'hpc-download-selected' && state.hpc.selectedRemote.size === 0;
+    }
+  }
+}
+
+function hpcDownloadWholeTreeModal(paths) {
+  if (!paths.length) { toast('没有可下载的远端目录', true); return; }
+  const localDir = state.hpc.localPath || '~';
+  showModal('一键下载整个目录',
+    '<div class="modal-note">这是一键下载整个远端目录，没有经过文件筛选；目录里的输出和缓存会一起下载。</div>' +
+    '<label>下载到左侧本地目录<input id="hpc-download-dir" value="' + esc(localDir) + '"></label>' +
     '<div class="hpc-upload-list">' + paths.map(p => '<div>' + esc(p) + '</div>').join('') + '</div>' +
-    '<label class="check-line"><input type="checkbox" id="hpc-download-confirm"> 确认下载所有文件，这将包括缓存</label>' +
-    '<div class="hint">下载目录中的 RESTART/wfn 等缓存也会包含在内。</div>',
-    '<button class="btn ghost" id="hpc-download-cancel">取消</button><button class="btn primary" id="hpc-download-go" disabled>下载</button>');
+    '<label class="check-line"><input type="checkbox" id="hpc-download-confirm"> 确认下载整个目录，这将包含缓存</label>' +
+    '<div class="hint">RESTART/wfn 等缓存也会包含在内。下载完成后自动解压到上面的目录。</div>',
+    '<button class="btn ghost" id="hpc-download-cancel">取消</button><button class="btn primary" id="hpc-download-go" disabled>开始下载</button>');
   $('#hpc-download-cancel').onclick = closeModal;
   $('#hpc-download-confirm').onchange = () => { $('#hpc-download-go').disabled = !$('#hpc-download-confirm').checked; };
   $('#hpc-download-go').onclick = async () => {
@@ -1750,12 +1772,12 @@ function hpcDownloadModal(paths) {
     btn.disabled = true; btn.textContent = '下载中…';
     try {
       const d = await hpcApi('/api/hpc/download', { method: 'POST', body: {
-        remote_paths: paths, local_dir: $('#hpc-download-dir').value.trim(),
+        remote_paths: paths, local_dir: $('#hpc-download-dir').value.trim(), compress: true,
       }});
       closeModal();
       toast('已下载 ' + d.downloaded + ' 项到 ' + d.local_dir);
       await hpcLoadLocal(d.local_dir);
-    } catch (e) { btn.disabled = false; btn.textContent = '下载'; toast(e.message, true); }
+    } catch (e) { btn.disabled = false; btn.textContent = '开始下载'; toast(e.message, true); }
   };
 }
 
@@ -1815,7 +1837,7 @@ function renderHpcTasks() {
     '<td><span class="status ' + hpcStateClass(t.status) + '">' + esc(hpcStateText(t.status)) + '</span></td>' +
     '<td>' + esc(t.cores) + ' / ' + esc(t.nodes) + '</td>' +
     '<td class="job-actions"><button class="btn small ghost" data-hpc-log="' + t.id + '">日志</button> ' +
-      '<button class="btn small ghost" data-hpc-task-download="' + t.id + '">下载</button> ' +
+      '<button class="btn small ghost" data-hpc-task-download="' + t.id + '">一键下载</button> ' +
       (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'SUBMITTED' ? '<button class="btn small danger" data-hpc-cancel="' + t.id + '">取消</button> ' : '') +
       '<button class="btn small danger" data-hpc-delete-task="' + t.id + '">删除记录</button></td></tr>').join('') ||
     '<tr><td colspan="7" class="empty">还没有超算任务。</td></tr>';
@@ -1825,7 +1847,7 @@ function renderHpcTasks() {
     '<td><span class="status ' + hpcStateClass(t.status) + '">' + esc(hpcStateText(t.status)) + '</span></td>' +
     '<td><code>' + esc(t.log_path || '—') + '</code></td>' +
     '<td class="job-actions"><button class="btn small ghost" data-hpc-log="' + t.id + '">预览</button> ' +
-      '<button class="btn small ghost" data-hpc-task-download="' + t.id + '">下载</button></td></tr>').join('') ||
+      '<button class="btn small ghost" data-hpc-task-download="' + t.id + '">一键下载</button></td></tr>').join('') ||
     '<tr><td colspan="5" class="empty">还没有任务日志。</td></tr>';
 }
 
@@ -1956,7 +1978,7 @@ function hpcOpenPreview(path, name) {
     firstLoad = true;
     load(false);
   };
-  $('#hpc-preview-download').onclick = () => { closeModal(); hpcDownloadModal([path]); };
+  $('#hpc-preview-download').onclick = () => { closeModal(); hpcDownloadDirect([path]); };
   load(true);
 }
 
@@ -1965,7 +1987,7 @@ async function openHpcLog(id) {
   if (!t) return;
   showModal('任务日志 · ' + t.name, '<pre class="log-box" id="hpc-log-box">加载中…</pre>', '<button class="btn ghost" id="hpc-log-close">关闭</button><button class="btn" id="hpc-log-download">下载任务目录</button>');
   $('#hpc-log-close').onclick = closeModal;
-  $('#hpc-log-download').onclick = () => { closeModal(); hpcDownloadModal([t.remote_dir]); };
+  $('#hpc-log-download').onclick = () => { closeModal(); hpcDownloadWholeTreeModal([t.remote_dir]); };
   try {
     const d = await hpcApi('/api/hpc/tasks/' + t.id + '/log');
     const pre = $('#hpc-log-box');
@@ -2121,7 +2143,7 @@ function bind() {
   };
   if ($('#hpc-new-folder')) $('#hpc-new-folder').onclick = hpcMkdirModal;
   if ($('#hpc-upload-selected')) $('#hpc-upload-selected').onclick = () => hpcUploadModal(Array.from(state.hpc.selectedLocal));
-  if ($('#hpc-download-selected')) $('#hpc-download-selected').onclick = () => hpcDownloadModal(Array.from(state.hpc.selectedRemote));
+  if ($('#hpc-download-selected')) $('#hpc-download-selected').onclick = (e) => hpcDownloadDirect(Array.from(state.hpc.selectedRemote), e.currentTarget);
   if ($('#hpc-delete-selected')) $('#hpc-delete-selected').onclick = () => hpcDeleteRemote(Array.from(state.hpc.selectedRemote));
 
   const hpcList = (side) => $(side === 'local' ? '#hpc-local-list' : '#hpc-remote-list');
@@ -2146,7 +2168,7 @@ function bind() {
     if (btn) {
       if (btn.dataset.hpcUploadOne) hpcUploadModal([btn.dataset.hpcUploadOne]);
       if (btn.dataset.hpcPreview) hpcOpenPreview(btn.dataset.hpcPreview);
-      if (btn.dataset.hpcDownloadOne) hpcDownloadModal([btn.dataset.hpcDownloadOne]);
+      if (btn.dataset.hpcDownloadOne) hpcDownloadDirect([btn.dataset.hpcDownloadOne], btn);
       if (btn.dataset.hpcDeleteOne) hpcDeleteRemote([btn.dataset.hpcDeleteOne]);
       if (btn.dataset.hpcLocalDelete) hpcDeleteLocal([btn.dataset.hpcLocalDelete]);
       return;
@@ -2171,7 +2193,7 @@ function bind() {
     if (b.dataset.hpcDeleteTask) hpcDeleteTaskModal(Number(b.dataset.hpcDeleteTask));
     if (b.dataset.hpcTaskDownload) {
       const t = (state.hpc.tasks || []).find(x => x.id === Number(b.dataset.hpcTaskDownload));
-      if (t && t.remote_dir) hpcDownloadModal([t.remote_dir]);
+      if (t && t.remote_dir) hpcDownloadWholeTreeModal([t.remote_dir]);
     }
   };
   const hpcLogTable = $('#hpc-task-logs-table');
@@ -2181,7 +2203,7 @@ function bind() {
     if (b.dataset.hpcLog) openHpcLog(Number(b.dataset.hpcLog));
     if (b.dataset.hpcTaskDownload) {
       const t = (state.hpc.tasks || []).find(x => x.id === Number(b.dataset.hpcTaskDownload));
-      if (t && t.remote_dir) hpcDownloadModal([t.remote_dir]);
+      if (t && t.remote_dir) hpcDownloadWholeTreeModal([t.remote_dir]);
     }
   };
   $$('[data-pick-kind]').forEach(b => b.onclick = () => pickPath(b.dataset.pickKind, b.dataset.pickTarget, b.dataset.pickTitle));

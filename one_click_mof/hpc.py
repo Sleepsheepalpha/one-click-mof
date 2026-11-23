@@ -328,34 +328,57 @@ def upload_paths(session, local_paths, remote_dir, compress=False):
             pass
 
 
-def download_paths(session, remote_paths, local_dir):
+def _dedupe_remote_paths(paths):
+    keep = []
+    for p in sorted(set(paths), key=lambda x: (len(x), x)):
+        if any(p == k or p.startswith(k.rstrip("/") + "/") for k in keep):
+            continue
+        keep.append(p)
+    return keep
+
+
+def _download_archive(session, sftp, paths, outdir):
+    """Pack all selected remote paths into one tar.gz and extract locally."""
+    tmpdir = tempfile.mkdtemp(prefix="ocm_download_")
+    archive = os.path.join(tmpdir, "download.tar.gz")
+    remote_archive = "/tmp/.ocm_download_" + uuid.uuid4().hex + ".tar.gz"
+    args = ["tar", "-czf", remote_archive]
+    for p in paths:
+        parent = posixpath.dirname(p) or "/"
+        base = posixpath.basename(p)
+        if not base or base in (".", ".."):
+            raise HpcError("远端路径不合法：" + p)
+        args.extend(["-C", parent, "./" + base])
+    try:
+        r = session.run(" ".join(shlex.quote(a) for a in args), timeout=1800)
+        if r["rc"] != 0:
+            raise HpcError("远端打包失败：" + r["err"])
+        sftp.get(remote_archive, archive)
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(outdir)
+    finally:
+        session.run("rm -f -- " + shlex.quote(remote_archive))
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def download_paths(session, remote_paths, local_dir, compress=False):
     if not remote_paths:
         raise HpcError("没有选择远端文件")
     outdir = Path(local_dir or "~").expanduser().resolve()
     outdir.mkdir(parents=True, exist_ok=True)
+    paths = [normalize(session, raw) for raw in remote_paths]
     sftp = session.sftp()
     try:
-        for raw in remote_paths:
-            p = normalize(session, raw)
+        if compress:
+            _download_archive(session, sftp, _dedupe_remote_paths(paths), outdir)
+            return {"downloaded": len(remote_paths), "local_dir": str(outdir), "compressed": True}
+        for p in paths:
             st = sftp.stat(p)
             if stat.S_ISDIR(st.st_mode):
-                tmp = tempfile.mkdtemp(prefix="ocm_download_")
-                archive = os.path.join(tmp, "download.tar.gz")
-                parent = posixpath.dirname(p)
-                remote_archive = "/tmp/.ocm_download_" + uuid.uuid4().hex + ".tar.gz"
-                base = posixpath.basename(p)
-                r = session.run("tar -czf " + shlex.quote(remote_archive) + " -C " + shlex.quote(parent) + " " + shlex.quote(base))
-                if r["rc"] != 0:
-                    raise HpcError("远端打包失败：" + r["err"])
-                try:
-                    sftp.get(remote_archive, archive)
-                    with tarfile.open(archive, "r:gz") as tf:
-                        tf.extractall(outdir)
-                finally:
-                    session.run("rm -f -- " + shlex.quote(remote_archive))
+                _download_archive(session, sftp, [p], outdir)
             else:
                 sftp.get(p, str(outdir / posixpath.basename(p)))
-        return {"downloaded": len(remote_paths), "local_dir": str(outdir)}
+        return {"downloaded": len(remote_paths), "local_dir": str(outdir), "compressed": False}
     except Exception as exc:
         if isinstance(exc, HpcError):
             raise

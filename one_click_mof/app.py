@@ -1354,6 +1354,7 @@ class Handler(BaseHTTPRequestHandler):
                     s = self._hpc()
                     return self._send(200, hpc.download_paths(
                         s, body.get("remote_paths") or [], str(body.get("local_dir", "")),
+                        bool(body.get("compress")),
                     ))
                 except hpc.HpcError as exc:
                     return self._send(400, {"error": str(exc)})
