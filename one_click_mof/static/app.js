@@ -22,6 +22,7 @@ const state = {
     dashboard: null, localPath: '', remotePath: '', localItems: [], remoteItems: [],
     selectedLocal: new Set(), selectedRemote: new Set(), tasks: [], timer: null,
     previewTimer: null, previewKey: '',
+    downloadTimer: null, downloadKey: '', downloadLocked: false,
     fingerprint: '',
   },
 };
@@ -753,19 +754,32 @@ function clearHpcPreviewTimer() {
   if (state.hpc) state.hpc.previewKey = '';
 }
 
+function clearHpcDownloadPoll() {
+  if (state.hpc && state.hpc.downloadTimer) {
+    clearInterval(state.hpc.downloadTimer);
+    state.hpc.downloadTimer = null;
+  }
+  if (state.hpc) { state.hpc.downloadKey = ''; state.hpc.downloadLocked = false; }
+}
+
 function showModal(title, body, foot) {
   clearHpcPreviewTimer();
+  clearHpcDownloadPoll();
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = body;
   $('#modal-foot').innerHTML = foot || '<button class="btn ghost" id="modal-close-2">关闭</button>';
   $('#modal').classList.remove('hidden');
+  const x = $('#modal-close');
+  if (x) { x.disabled = false; x.title = ''; }
   const c = $('#modal-close-2');
   if (c) c.onclick = closeModal;
 }
 
 function closeModal() {
+  if (state.hpc && state.hpc.downloadLocked) return;
   $('#modal').classList.add('hidden');
   clearHpcPreviewTimer();
+  clearHpcDownloadPoll();
   if (state.logTimer) { clearInterval(state.logTimer); state.logTimer = null; }
 }
 
@@ -1733,18 +1747,139 @@ function hpcUploadModal(paths) {
   };
 }
 
+function hpcFmtDuration(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  if (sec < 60) return sec + ' 秒';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + ' 分 ' + String(s).padStart(2, '0') + ' 秒';
+  return Math.floor(m / 60) + ' 小时 ' + (m % 60) + ' 分';
+}
+
+function hpcDownloadStageText(j) {
+  const map = {
+    preparing: '准备下载', packing: '正在超算端打包', transferring: '正在下载',
+    extracting: '正在解压', done: '下载完成', error: '下载失败',
+  };
+  let text = map[j.stage] || '处理中';
+  if (j.status === 'running') text += ' · 已等待 ' + hpcFmtDuration(j.elapsed);
+  return text;
+}
+
+function hpcDownloadStats(j) {
+  const skip = j.skip_cache ? ' · 已跳过 wfn 缓存' : '';
+  if (j.stage === 'preparing') return '正在检查 ' + j.items + ' 个文件/目录' + skip;
+  if (j.stage === 'packing') return '正在把 ' + j.items + ' 项打包成一个压缩包' + skip;
+  if (j.stage === 'transferring') {
+    return hpcFmtBytes(j.transferred) + ' / ' + hpcFmtBytes(j.total_bytes) +
+      (j.speed ? ' · ' + hpcFmtBytes(j.speed) + '/s' : '') + skip;
+  }
+  if (j.stage === 'extracting') return '压缩包 ' + hpcFmtBytes(j.total_bytes) + ' 已下载，正在解压' + skip;
+  if (j.stage === 'done') return hpcFmtBytes(j.total_bytes) + ' · 用时 ' + hpcFmtDuration(j.duration) + skip;
+  if (j.stage === 'error') return j.error || '下载失败';
+  return skip;
+}
+
+function hpcRenderDownloadJob(j) {
+  const track = $('#hpc-dl-track');
+  const bar = $('#hpc-dl-bar');
+  const stage = $('#hpc-dl-stage');
+  const pct = $('#hpc-dl-percent');
+  if (!track || !bar || !stage || !pct) return;
+  const running = j.status === 'running';
+  const indeterminate = running && ['preparing', 'packing', 'extracting'].includes(j.stage);
+  stage.textContent = hpcDownloadStageText(j);
+  track.classList.toggle('indeterminate', indeterminate);
+  track.classList.toggle('error', j.stage === 'error');
+  if (indeterminate) {
+    pct.textContent = '…';
+    bar.style.width = '';
+  } else if (j.stage === 'error') {
+    pct.textContent = '失败';
+    bar.style.width = '100%';
+  } else {
+    const value = j.stage === 'done' ? 100 : Math.max(0, Math.min(100, Number(j.percent) || 0));
+    pct.textContent = value + '%';
+    bar.style.width = value + '%';
+  }
+  const stats = $('#hpc-dl-stats');
+  if (stats) stats.textContent = hpcDownloadStats(j);
+  const path = $('#hpc-dl-path');
+  if (path) path.textContent = '下载到：' + (j.local_dir || '—');
+  const close = $('#hpc-dl-close');
+  if (close) {
+    close.disabled = running;
+    close.textContent = running ? '下载中…' : '关闭';
+  }
+}
+
+function hpcOpenDownloadProgress(jobId) {
+  showModal('正在从超算下载',
+    '<div class="hpc-dl-stage"><span id="hpc-dl-stage">准备下载…</span><b id="hpc-dl-percent">…</b></div>' +
+    '<div class="hpc-dl-track indeterminate" id="hpc-dl-track"><div class="hpc-dl-bar" id="hpc-dl-bar"></div></div>' +
+    '<div class="hpc-dl-stats" id="hpc-dl-stats">正在建立下载任务…</div>' +
+    '<div class="hpc-dl-path" id="hpc-dl-path">下载到：—</div>',
+    '<button class="btn ghost" id="hpc-dl-close" disabled>下载中…</button>');
+  const key = jobId + '|' + Date.now() + '|' + Math.random();
+  state.hpc.downloadKey = key;
+  state.hpc.downloadLocked = true;
+  const headerClose = $('#modal-close');
+  if (headerClose) { headerClose.disabled = true; headerClose.title = '下载仍在进行'; }
+  let failures = 0;
+  $('#hpc-dl-close').onclick = closeModal;
+
+  const tick = async () => {
+    if (document.hidden) return;
+    try {
+      const j = await hpcApi('/api/hpc/downloads/' + jobId);
+      if (state.hpc.downloadKey !== key) return;
+      failures = 0;
+      hpcRenderDownloadJob(j);
+      if (j.status !== 'running') {
+        if (state.hpc.downloadTimer) { clearInterval(state.hpc.downloadTimer); state.hpc.downloadTimer = null; }
+        state.hpc.downloadLocked = false;
+        if (headerClose) { headerClose.disabled = false; headerClose.title = ''; }
+        $('#modal-title').textContent = j.status === 'done' ? '下载完成' : '下载失败';
+        if (j.status === 'done') {
+          toast('已下载到 ' + j.local_dir, false, 4000);
+          await hpcLoadLocal(j.local_dir);
+        } else {
+          toast(j.error || '下载失败', true);
+        }
+      }
+    } catch (e) {
+      if (state.hpc.downloadKey !== key) return;
+      failures += 1;
+      const stage = $('#hpc-dl-stage');
+      if (stage) stage.textContent = '获取进度失败，重试中…';
+      if (failures >= 5) {
+        if (state.hpc.downloadTimer) { clearInterval(state.hpc.downloadTimer); state.hpc.downloadTimer = null; }
+        state.hpc.downloadLocked = false;
+        if (headerClose) { headerClose.disabled = false; headerClose.title = ''; }
+        const close = $('#hpc-dl-close');
+        if (close) { close.disabled = false; close.textContent = '关闭'; }
+        toast(e.message, true);
+      }
+    }
+  };
+  state.hpc.downloadTimer = setInterval(tick, 1000);
+  tick();
+}
+
+function hpcRequestDownload(paths, localDir, skipCache) {
+  return hpcApi('/api/hpc/download', { method: 'POST', body: {
+    remote_paths: paths, local_dir: localDir, compress: true, skip_cache: !!skipCache,
+  }});
+}
+
 async function hpcDownloadDirect(paths, trigger) {
   if (!paths.length) { toast('先勾选超算文件', true); return; }
   const localDir = state.hpc.localPath || '~';
+  const skipCache = $('#hpc-skip-wfn') ? $('#hpc-skip-wfn').checked : false;
   const oldText = trigger ? trigger.textContent : '';
-  if (trigger) { trigger.disabled = true; trigger.textContent = '下载中…'; }
-  toast('正在打包下载 ' + paths.length + ' 项到 ' + localDir + '…', false, 6000);
+  if (trigger) { trigger.disabled = true; trigger.textContent = '启动中…'; }
   try {
-    const d = await hpcApi('/api/hpc/download', { method: 'POST', body: {
-      remote_paths: paths, local_dir: localDir, compress: true,
-    }});
-    toast('已下载 ' + d.downloaded + ' 项到 ' + d.local_dir);
-    await hpcLoadLocal(d.local_dir);
+    const job = await hpcRequestDownload(paths, localDir, skipCache);
+    hpcOpenDownloadProgress(job.id);
   } catch (e) {
     toast(e.message, true);
   } finally {
@@ -1769,15 +1904,13 @@ function hpcDownloadWholeTreeModal(paths) {
   $('#hpc-download-confirm').onchange = () => { $('#hpc-download-go').disabled = !$('#hpc-download-confirm').checked; };
   $('#hpc-download-go').onclick = async () => {
     const btn = $('#hpc-download-go');
-    btn.disabled = true; btn.textContent = '下载中…';
+    btn.disabled = true; btn.textContent = '启动中…';
     try {
-      const d = await hpcApi('/api/hpc/download', { method: 'POST', body: {
-        remote_paths: paths, local_dir: $('#hpc-download-dir').value.trim(), compress: true,
-      }});
-      closeModal();
-      toast('已下载 ' + d.downloaded + ' 项到 ' + d.local_dir);
-      await hpcLoadLocal(d.local_dir);
-    } catch (e) { btn.disabled = false; btn.textContent = '开始下载'; toast(e.message, true); }
+      const job = await hpcRequestDownload(paths, $('#hpc-download-dir').value.trim(), false);
+      hpcOpenDownloadProgress(job.id);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = '开始下载'; toast(e.message, true);
+    }
   };
 }
 
@@ -2145,6 +2278,15 @@ function bind() {
   if ($('#hpc-upload-selected')) $('#hpc-upload-selected').onclick = () => hpcUploadModal(Array.from(state.hpc.selectedLocal));
   if ($('#hpc-download-selected')) $('#hpc-download-selected').onclick = (e) => hpcDownloadDirect(Array.from(state.hpc.selectedRemote), e.currentTarget);
   if ($('#hpc-delete-selected')) $('#hpc-delete-selected').onclick = () => hpcDeleteRemote(Array.from(state.hpc.selectedRemote));
+  const skipWfn = $('#hpc-skip-wfn');
+  if (skipWfn) {
+    let saved = null;
+    try { saved = localStorage.getItem('mofui.hpcSkipWfn'); } catch (e) {}
+    skipWfn.checked = saved === null ? true : saved === '1';
+    skipWfn.onchange = () => {
+      try { localStorage.setItem('mofui.hpcSkipWfn', skipWfn.checked ? '1' : '0'); } catch (e) {}
+    };
+  }
 
   const hpcList = (side) => $(side === 'local' ? '#hpc-local-list' : '#hpc-remote-list');
   if (hpcList('local')) hpcList('local').onchange = (e) => {

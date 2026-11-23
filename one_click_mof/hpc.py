@@ -387,6 +387,163 @@ def download_paths(session, remote_paths, local_dir, compress=False):
         sftp.close()
 
 
+SKIP_WFN_EXCLUDES = ["--exclude=*.wfn", "--exclude=*.wfn.*"]
+_DOWNLOAD_JOBS = {}
+_DOWNLOAD_LOCK = threading.RLock()
+_DOWNLOAD_TTL = 3600
+
+
+def _prune_download_jobs():
+    now = time.time()
+    for job_id, job in list(_DOWNLOAD_JOBS.items()):
+        if job.get("status") != "running" and now - job.get("updated_at", now) > _DOWNLOAD_TTL:
+            _DOWNLOAD_JOBS.pop(job_id, None)
+
+
+def _download_snapshot(job):
+    with _DOWNLOAD_LOCK:
+        data = dict(job)
+    now = time.time()
+    if data.get("status") == "running":
+        data["elapsed"] = int(now - data.get("started_at", now))
+    else:
+        data["elapsed"] = int(data.get("duration") or 0)
+    return data
+
+
+def _download_update(job, **fields):
+    with _DOWNLOAD_LOCK:
+        job.update(fields)
+        job["updated_at"] = time.time()
+
+
+def get_download(job_id, session=None):
+    with _DOWNLOAD_LOCK:
+        _prune_download_jobs()
+        job = _DOWNLOAD_JOBS.get(str(job_id or ""))
+        if not job:
+            return None
+        if session and (job.get("host") != session.host or job.get("user") != session.user):
+            return None
+        return _download_snapshot(job)
+
+
+def start_download(session, remote_paths, local_dir, compress=True, skip_cache=False):
+    paths = [str(p) for p in (remote_paths or []) if p]
+    if not paths:
+        raise HpcError("没有选择远端文件")
+    job_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    outdir = str(Path(local_dir or "~").expanduser().resolve())
+    job = {
+        "id": job_id, "status": "running", "stage": "preparing", "percent": 0,
+        "transferred": 0, "total_bytes": 0, "speed": 0, "items": len(paths),
+        "skip_cache": bool(skip_cache), "compress": bool(compress),
+        "local_dir": outdir, "error": "", "duration": 0,
+        "host": session.host, "user": session.user,
+        "started_at": now, "updated_at": now,
+    }
+    with _DOWNLOAD_LOCK:
+        _prune_download_jobs()
+        _DOWNLOAD_JOBS[job_id] = job
+    threading.Thread(
+        target=_download_worker,
+        args=(job, session, paths, outdir, bool(skip_cache)),
+        name="hpc-download-" + job_id,
+        daemon=True,
+    ).start()
+    return _download_snapshot(job)
+
+
+def _download_worker(job, session, raw_paths, local_dir, skip_cache):
+    started = time.time()
+    remote_archive = ""
+    tmpdir = ""
+    archive = ""
+    sftp = None
+    try:
+        outdir = Path(local_dir or "~").expanduser().resolve()
+        outdir.mkdir(parents=True, exist_ok=True)
+        paths = [normalize(session, raw) for raw in raw_paths]
+        _download_update(job, local_dir=str(outdir), stage="preparing")
+        sftp = session.sftp()
+        for p in paths:
+            sftp.stat(p)
+
+        _download_update(job, stage="packing")
+        remote_archive = "/tmp/.ocm_download_" + uuid.uuid4().hex + ".tar.gz"
+        args = ["tar", "-czf", remote_archive]
+        if skip_cache:
+            args.extend(SKIP_WFN_EXCLUDES)
+        for p in _dedupe_remote_paths(paths):
+            parent = posixpath.dirname(p) or "/"
+            base = posixpath.basename(p)
+            if not base or base in (".", ".."):
+                raise HpcError("远端路径不合法：" + p)
+            args.extend(["-C", parent, "./" + base])
+        r = session.run(" ".join(shlex.quote(a) for a in args), timeout=1800)
+        if r["rc"] != 0:
+            raise HpcError("远端打包失败：" + r["err"])
+
+        st = sftp.stat(remote_archive)
+        archive_bytes = int(st.st_size or 0)
+        if archive_bytes < 128:
+            raise HpcError("跳过 wfn 缓存后没有可下载内容" if skip_cache else "远端打包结果为空")
+
+        tmpdir = tempfile.mkdtemp(prefix="ocm_download_")
+        archive = os.path.join(tmpdir, "download.tar.gz")
+        _download_update(job, stage="transferring", total_bytes=archive_bytes, transferred=0, percent=0)
+        transfer_start = time.time()
+        last_update = [0.0]
+
+        def progress(done, total):
+            now = time.time()
+            done = int(done or 0)
+            total = int(total or archive_bytes)
+            if now - last_update[0] < 0.25 and done < total:
+                return
+            last_update[0] = now
+            percent = min(99, int(done * 100 / total)) if total else 0
+            speed = int(done / max(0.1, now - transfer_start))
+            _download_update(
+                job, stage="transferring", transferred=done, total_bytes=total,
+                percent=percent, speed=speed,
+            )
+
+        sftp.get(remote_archive, archive, callback=progress)
+        _download_update(
+            job, stage="extracting", transferred=archive_bytes, total_bytes=archive_bytes,
+            percent=100, speed=0,
+        )
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(outdir)
+
+        duration = int(time.time() - started)
+        _download_update(
+            job, status="done", stage="done", percent=100,
+            transferred=archive_bytes, total_bytes=archive_bytes, duration=duration,
+            finished_at=time.time(), error="",
+        )
+    except Exception as exc:
+        _download_update(
+            job, status="error", stage="error", error=str(exc), speed=0,
+            duration=int(time.time() - started), finished_at=time.time(),
+        )
+    finally:
+        if sftp:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+        if remote_archive:
+            try:
+                session.run("rm -f -- " + shlex.quote(remote_archive), timeout=30)
+            except Exception:
+                pass
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 
 
 def delete_local(paths, trash_root):

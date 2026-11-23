@@ -1155,6 +1155,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, hpc_list_tasks(s, refresh=q.get("refresh", ["1"])[0] != "0"))
                 except hpc.HpcError as exc:
                     return self._send(400, {"error": str(exc)})
+            m = re.match(r"^/api/hpc/downloads/([0-9a-f]{12})$", path)
+            if m:
+                try:
+                    s = self._hpc()
+                    job = hpc.get_download(m.group(1), s)
+                    if not job:
+                        return self._send(404, {"error": "下载任务不存在或已过期"})
+                    return self._send(200, job)
+                except hpc.HpcError as exc:
+                    return self._send(400, {"error": str(exc)})
             m = re.match(r"^/api/hpc/tasks/(\d+)/log$", path)
             if m:
                 try:
@@ -1352,10 +1362,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/hpc/download":
                 try:
                     s = self._hpc()
-                    return self._send(200, hpc.download_paths(
+                    job = hpc.start_download(
                         s, body.get("remote_paths") or [], str(body.get("local_dir", "")),
-                        bool(body.get("compress")),
-                    ))
+                        bool(body.get("compress", True)), bool(body.get("skip_cache")),
+                    )
+                    return self._send(200, job)
                 except hpc.HpcError as exc:
                     return self._send(400, {"error": str(exc)})
             if path == "/api/hpc/tasks":

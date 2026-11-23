@@ -291,6 +291,7 @@
           <div class="path-row"><input id="hpc-remote-path" placeholder="/home/..."><button class="btn pick" id="hpc-remote-go">转到</button><button class="btn pick" id="hpc-remote-up">上一级</button><button class="btn pick" id="hpc-new-folder">新建文件夹</button></div>
           <div class="hpc-file-list" id="hpc-remote-list"><div class="empty">尚未加载。</div></div>
           <div class="toolbar hpc-file-actions"><button class="btn small" id="hpc-download-selected" disabled>下载选中</button><button class="btn small danger" id="hpc-delete-selected" disabled>删除选中</button><span class="hint" id="hpc-remote-selected">0 个</span></div>
+          <label class="check-line hpc-download-option" title="勾选后手动下载会排除 .wfn 和 .wfn.bak-* 文件"><input type="checkbox" id="hpc-skip-wfn"> 手动下载时跳过 wfn 缓存（.wfn / .wfn.bak-*）</label>
         </div>
       </div>
       <div id="hpc-file-status" class="hpc-status"></div>
