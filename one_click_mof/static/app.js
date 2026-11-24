@@ -16,6 +16,7 @@ const state = {
   logTimer: null,
   tutorial: { files: [], current: 'README.md', visible: true },
   workspace: (() => { try { return localStorage.getItem('mofui.workspace') === 'hpc' ? 'hpc' : 'local'; } catch (e) { return 'local'; } })(),
+  localOnline: null,
   view: 'projects',
   hpc: {
     token: null, host: '', port: 22, user: '', home: '', remoteRoot: '',
@@ -23,6 +24,7 @@ const state = {
     selectedLocal: new Set(), selectedRemote: new Set(), tasks: [], timer: null,
     previewTimer: null, previewKey: '',
     downloadTimer: null, downloadKey: '', downloadLocked: false,
+    online: false,
     fingerprint: '',
   },
 };
@@ -317,6 +319,7 @@ function switchWorkspace(ws) {
   } else {
     switchView('projects');
   }
+  renderServiceStatus();
 }
 
 function switchView(name) {
@@ -351,6 +354,7 @@ function switchView(name) {
   startHpcTimer(name);
   document.body.classList.toggle('hpc-mode', name.startsWith('hpc-'));
   document.body.classList.toggle('tutorial-mode', name === 'tutorial');
+  renderServiceStatus();
   if (name === 'tutorial') loadTutorial(state.tutorial.current || 'README.md').catch(err => toast(err.message, true));
 }
 
@@ -1452,10 +1456,30 @@ async function loadCore() {
   if (!state.project && projects.length) selectProject(projects[0].id);
 }
 
-function updateServer(ok) {
+function renderServiceStatus() {
   const dot = $('#server-dot');
+  const text = $('#server-text');
+  if (!dot || !text) return;
+  let ok = false;
+  let label = '';
+  if (state.workspace === 'hpc') {
+    if (!state.hpc.token) {
+      label = '超算未登录';
+    } else {
+      ok = !!state.hpc.online;
+      label = ok ? '超算服务在线' : '超算服务离线';
+    }
+  } else {
+    ok = state.localOnline !== false;
+    label = ok ? '本地服务在线' : '本地服务离线';
+  }
   dot.className = 'dot ' + (ok ? 'ok' : 'bad');
-  $('#server-text').textContent = ok ? '本地服务在线' : '服务断开';
+  text.textContent = label;
+}
+
+function updateServer(ok) {
+  state.localOnline = !!ok;
+  renderServiceStatus();
 }
 
 
@@ -1513,12 +1537,23 @@ function hpcSettingsStatus(text, bad) {
 async function hpcApi(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {}, { 'X-HPC-Token': state.hpc.token || '' });
   try {
-    return await api(path, Object.assign({}, opts, { headers }));
+    const data = await api(path, Object.assign({}, opts, { headers }));
+    state.hpc.online = true;
+    renderServiceStatus();
+    return data;
   } catch (e) {
-    if (String(e.message).indexOf('会话') >= 0) {
+    const msg = String(e.message || '');
+    const sessionExpired = msg.indexOf('会话') >= 0;
+    const offline = sessionExpired || e instanceof TypeError ||
+      /SSH 连接失败|timed out|Failed to fetch|NetworkError/i.test(msg);
+    if (sessionExpired) {
       state.hpc.token = null;
+      state.hpc.online = false;
       switchView('hpc-login');
+    } else if (offline && state.hpc.token) {
+      state.hpc.online = false;
     }
+    renderServiceStatus();
     throw e;
   }
 }
@@ -1574,6 +1609,7 @@ async function hpcLogin(ev) {
       host, port, user, password, remote_root: state.hpc.remoteRoot || state.settings.hpc_remote_root || '',
     }});
     state.hpc.token = d.token;
+    state.hpc.online = true;
     state.hpc.host = d.host;
     state.hpc.port = d.port;
     state.hpc.user = d.user;
@@ -2199,9 +2235,10 @@ function hpcTestSettings() {
 async function hpcLogout() {
   if (!confirm('退出超算账号？密码不会保留，下次需要重新输入。')) return;
   try { await hpcApi('/api/hpc/logout', { method: 'POST', body: {} }); } catch (e) {}
-  state.hpc.token = null; state.hpc.dashboard = null; state.hpc.tasks = []; state.hpc.remoteItems = [];
+  state.hpc.token = null; state.hpc.online = false; state.hpc.dashboard = null; state.hpc.tasks = []; state.hpc.remoteItems = [];
   $('#hpc-password').value = '';
   switchView('hpc-login');
+  renderServiceStatus();
   toast('已退出超算');
 }
 
