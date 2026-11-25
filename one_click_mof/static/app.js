@@ -15,7 +15,12 @@ const state = {
   filter: { key: '', op: 'lt', value: '' },
   logTimer: null,
   tutorial: { files: [], current: 'README.md', visible: true },
-  workspace: (() => { try { return localStorage.getItem('mofui.workspace') === 'hpc' ? 'hpc' : 'local'; } catch (e) { return 'local'; } })(),
+  workspace: (() => {
+    try {
+      const ws = localStorage.getItem('mofui.workspace');
+      return ws === 'hpc' || ws === 'predict' ? ws : 'local';
+    } catch (e) { return 'local'; }
+  })(),
   localOnline: null,
   view: 'projects',
   hpc: {
@@ -26,6 +31,10 @@ const state = {
     downloadTimer: null, downloadKey: '', downloadLocked: false,
     online: false,
     fingerprint: '',
+  },
+  predict: {
+    models: [], modelRoots: [], runs: [], selectedRunId: null,
+    artifacts: null, checkpoints: [], loaded: false,
   },
 };
 
@@ -42,6 +51,10 @@ const TITLES = {
   'hpc-tasks': ['任务', '提交 CP2K 任务，查看队列与日志。'],
   'hpc-tools': ['工具设置', '超算端可用的计算工具。'],
   'hpc-settings': ['通用设置', '超算连接、远程根目录和刷新间隔。'],
+  'predict-workbench': ['预测工作台', '选择本地模型、echos 和保存点，先生成本地最小成果。'],
+  'predict-runs': ['任务与保存点', '预测配置、checkpoint 和运行目录。'],
+  'predict-results': ['结果与转换', '推理输出转换为 CIF，并交给后续处理或计算。'],
+  'predict-models': ['模型与路径', '本地预训练模型、保存点和执行器接入状态。'],
 };
 
 async function api(path, opts = {}) {
@@ -311,11 +324,13 @@ function statusHtml(s) {
 }
 
 function switchWorkspace(ws) {
-  state.workspace = ws === 'hpc' ? 'hpc' : 'local';
+  state.workspace = ws === 'hpc' || ws === 'predict' ? ws : 'local';
   try { localStorage.setItem('mofui.workspace', state.workspace); } catch (e) {}
   $$('.workspace-btn').forEach(b => b.classList.toggle('active', b.dataset.workspace === state.workspace));
   if (state.workspace === 'hpc') {
     switchView(state.hpc.token ? 'hpc-dashboard' : 'hpc-login');
+  } else if (state.workspace === 'predict') {
+    switchView('predict-workbench');
   } else {
     switchView('projects');
   }
@@ -327,6 +342,10 @@ function switchView(name) {
     state.workspace = 'hpc';
     try { localStorage.setItem('mofui.workspace', 'hpc'); } catch (e) {}
   }
+  if (name && name.startsWith('predict-')) {
+    state.workspace = 'predict';
+    try { localStorage.setItem('mofui.workspace', 'predict'); } catch (e) {}
+  }
   if (name !== 'hpc-login' && name && name.startsWith('hpc-') && !state.hpc.token) name = 'hpc-login';
   state.view = name;
   $$('.workspace-btn').forEach(b => b.classList.toggle('active', b.dataset.workspace === state.workspace));
@@ -337,6 +356,8 @@ function switchView(name) {
   $('#page-sub').textContent = t[1];
   if (name.startsWith('hpc-')) {
     $('#project-pill').textContent = state.hpc.token ? (state.hpc.user + '@' + state.hpc.host) : '未登录超算';
+  } else if (name.startsWith('predict-')) {
+    $('#project-pill').textContent = '预测器 · 本地';
   } else if (state.project) {
     $('#project-pill').textContent = state.project.name + ' · ' + state.project.input_dir;
   } else {
@@ -351,8 +372,13 @@ function switchView(name) {
   if (name === 'hpc-files') loadHpcFiles();
   if (name === 'hpc-tasks') loadHpcTasks();
   if (name === 'hpc-settings') fillHpcSettings();
+  if (name === 'predict-workbench') loadPredictWorkbench();
+  if (name === 'predict-runs') loadPredictRuns();
+  if (name === 'predict-results') loadPredictResults();
+  if (name === 'predict-models') loadPredictModelsPage();
   startHpcTimer(name);
   document.body.classList.toggle('hpc-mode', name.startsWith('hpc-'));
+  document.body.classList.toggle('predict-mode', name.startsWith('predict-'));
   document.body.classList.toggle('tutorial-mode', name === 'tutorial');
   renderServiceStatus();
   if (name === 'tutorial') loadTutorial(state.tutorial.current || 'README.md').catch(err => toast(err.message, true));
@@ -1469,6 +1495,9 @@ function renderServiceStatus() {
       ok = !!state.hpc.online;
       label = ok ? '超算服务在线' : '超算服务离线';
     }
+  } else if (state.workspace === 'predict') {
+    ok = state.localOnline !== false;
+    label = ok ? '预测服务在线' : '预测服务离线';
   } else {
     ok = state.localOnline !== false;
     label = ok ? '本地服务在线' : '本地服务离线';
@@ -2254,6 +2283,407 @@ function startHpcTimer(name) {
   }, sec * 1000);
 }
 
+/* -------------------------------------------------------------------------
+   prediction workspace
+   ------------------------------------------------------------------------- */
+const PREDICT_KIND_TEXT = { predictor: '预测器', generator: '生成器', reinforce: '强化学习保存点', model: '模型' };
+
+function predictSetStatus(text, bad) {
+  const el = $('#predict-status');
+  if (!el) return;
+  el.className = 'hpc-status' + (bad ? ' bad' : (text ? ' ok' : ''));
+  el.textContent = text || '';
+}
+
+function predictSettingsStatus(text, bad) {
+  const el = $('#predict-settings-status');
+  if (!el) return;
+  el.className = 'hpc-status' + (bad ? ' bad' : (text ? ' ok' : ''));
+  el.textContent = text || '';
+}
+
+function predictSlug(text) {
+  return String(text || 'prediction').replace(/[^0-9A-Za-z_.-]+/g, '_').replace(/^[._]+|[._]+$/g, '').slice(0, 48) || 'prediction';
+}
+
+function predictFmtDate(stamp) {
+  if (!stamp) return '—';
+  if (typeof stamp === 'string' && !/^\d+$/.test(stamp)) return stamp;
+  try { return new Date(Number(stamp) * 1000).toLocaleString(); } catch (e) { return String(stamp); }
+}
+
+function predictApplySettings() {
+  const s = state.settings || {};
+  const modelRoot = $('#predict-model-root');
+  const checkpointRoot = $('#predict-checkpoint-root');
+  const workRoot = $('#predict-work-root');
+  const saveRoot = $('#predict-save-root');
+  const ckptDir = $('#predict-ckpt-dir');
+  if (modelRoot) modelRoot.value = s.predict_model_root || '';
+  if (checkpointRoot) checkpointRoot.value = s.predict_checkpoint_root || '';
+  if (workRoot) workRoot.value = s.predict_work_root || '';
+  if (saveRoot && !saveRoot.value) saveRoot.value = s.predict_work_root || '';
+  if (ckptDir && !ckptDir.value) ckptDir.value = s.predict_checkpoint_root || '';
+}
+
+function predictCurrentModel() {
+  const path = $('#predict-model') ? $('#predict-model').value : '';
+  return (state.predict.models || []).find(m => m.path === path) || null;
+}
+
+function predictRenderModelMeta() {
+  const el = $('#predict-model-meta');
+  if (!el) return;
+  const m = predictCurrentModel();
+  if (!m) { el.textContent = '尚未发现或选择模型。把 .ckpt 放到模型根目录后刷新。'; return; }
+  el.innerHTML = '<b>' + esc(PREDICT_KIND_TEXT[m.kind] || m.kind) + '</b> · ' +
+    esc(hpcFmtBytes(m.size)) + (m.target ? ' · target: ' + esc(m.target) : '') +
+    '<br><code>' + esc(m.path) + '</code>';
+  const target = $('#predict-target');
+  if (target && !target.value && m.target) target.value = m.target;
+}
+
+function predictRenderModels() {
+  const sel = $('#predict-model');
+  if (!sel) return;
+  const previous = sel.value;
+  const items = state.predict.models || [];
+  sel.innerHTML = items.length ? items.map(m =>
+    '<option value="' + esc(m.path) + '" data-kind="' + esc(m.kind) + '">' +
+    esc(PREDICT_KIND_TEXT[m.kind] || m.kind) + ' · ' + esc(m.label) +
+    (m.target ? ' · ' + esc(m.target) : '') + '</option>').join('')
+    : '<option value="">未发现 .ckpt 模型</option>';
+  if (previous && items.some(m => m.path === previous)) sel.value = previous;
+  else {
+    const preferred = items.find(m => m.kind === 'predictor') || items[0];
+    if (preferred) sel.value = preferred.path;
+  }
+  const hint = $('#predict-model-hint');
+  if (hint) hint.textContent = items.length + ' 个模型 · ' + (state.predict.modelRoots || []).length + ' 个扫描目录';
+  const count = $('#predict-model-count');
+  if (count) count.textContent = items.length + ' 个 .ckpt';
+  const grid = $('#predict-model-grid');
+  if (grid) {
+    grid.innerHTML = items.length ? items.map(m =>
+      '<div class="predict-model-card"><b>' + esc(m.label) + '</b>' +
+      '<span class="hint">' + esc(PREDICT_KIND_TEXT[m.kind] || m.kind) +
+      (m.target ? ' · ' + esc(m.target) : '') + ' · ' + esc(hpcFmtBytes(m.size)) + '</span>' +
+      '<code>' + esc(m.path) + '</code>' +
+      '<span class="hint">' + (m.epoch != null ? 'epoch ' + esc(m.epoch) + ' · ' : '') +
+      (m.step != null ? 'step ' + esc(m.step) + ' · ' : '') + esc(predictFmtDate(m.mtime)) + '</span></div>'
+    ).join('') : '<div class="empty">没有发现模型。确认模型根目录里存在 .ckpt / .pt / .pth 文件。</div>';
+  }
+  predictRenderModelMeta();
+  predictUpdateSummary();
+}
+
+function predictUpdateSummary() {
+  const el = $('#predict-summary');
+  if (!el) return;
+  const m = predictCurrentModel();
+  const location = $('#predict-location') ? $('#predict-location').value : 'local';
+  const saveRoot = $('#predict-save-root') ? $('#predict-save-root').value.trim() : '';
+  const name = $('#predict-name') ? $('#predict-name').value.trim() : '';
+  const echos = $('#predict-echos') ? $('#predict-echos').value : '';
+  const resume = $('#predict-resume') && $('#predict-resume').checked;
+  const preview = saveRoot ? saveRoot.replace(/\/+$/, '') + '/<编号>_' + predictSlug(name) : '—';
+  const rows = [
+    ['模型', m ? (PREDICT_KIND_TEXT[m.kind] || m.kind) + ' · ' + m.label : '未选择'],
+    ['运行位置', location === 'hpc' ? '超算（待接入）' : '本地'],
+    ['echos', echos || '—'],
+    ['保存根目录', saveRoot || '未设置'],
+    ['预计运行目录', preview],
+    ['从保存点继续', resume ? '是' : '否'],
+  ];
+  el.innerHTML = rows.map(r => '<div class="row"><span>' + esc(r[0]) + '</span><b>' + esc(r[1]) + '</b></div>').join('');
+  const note = $('#predict-location-note');
+  if (note) note.textContent = location === 'hpc'
+    ? '超算预测执行器尚未接入；先在本地跑出最小成果，再接入 Slurm。'
+    : '本地执行器将使用本机 GPU；当前是框架，尚未启动推理。';
+  const btn = $('#predict-create');
+  if (btn) {
+    btn.disabled = location === 'hpc';
+    btn.title = location === 'hpc' ? '超算预测执行器待接入' : '';
+  }
+  const saveHint = $('#predict-save-hint');
+  if (saveHint) saveHint.textContent = saveRoot
+    ? '每次会在此目录下自动创建独立运行目录：' + preview
+    : '每次会在此目录下自动创建独立运行目录。';
+}
+
+async function loadPredictModels(force) {
+  if (!force && state.predict.loaded) { predictRenderModels(); return; }
+  const hint = $('#predict-model-hint');
+  if (hint) hint.textContent = '正在扫描本地模型…';
+  try {
+    const d = await api('/api/predict/models');
+    state.predict.models = d.items || [];
+    state.predict.modelRoots = d.roots || [];
+    state.predict.loaded = true;
+    predictRenderModels();
+  } catch (e) {
+    if (hint) hint.textContent = '模型扫描失败：' + e.message;
+    toast(e.message, true);
+  }
+}
+
+function predictRunStatus(run) {
+  const map = { configured: '已配置', queued: '排队', running: '运行中', done: '完成', failed: '失败', cancelled: '已取消' };
+  const cls = run.status === 'running' ? 'running' : (run.status === 'done' ? 'done' : (run.status === 'failed' ? 'failed' : (run.status === 'cancelled' ? 'cancelled' : 'queued')));
+  return '<span class="status ' + cls + '">' + esc(map[run.status] || run.status || '—') + '</span>';
+}
+
+function predictRunRow(run) {
+  return '<tr><td>' + esc(run.id) + '</td><td><b>' + esc(run.name) + '</b></td>' +
+    '<td>' + esc(run.model_name || '—') + (run.target ? '<br><span class="hint">' + esc(run.target) + '</span>' : '') + '</td>' +
+    '<td>' + esc(run.location === 'hpc' ? '超算' : '本地') + '</td>' +
+    '<td>' + esc(run.echos) + '</td><td>' + predictRunStatus(run) + '</td>' +
+    '<td><code>' + esc(run.run_dir || run.save_root || '—') + '</code></td>' +
+    '<td class="job-actions"><button class="btn small ghost" data-predict-open="' + esc(run.id) + '">查看保存点</button></td></tr>';
+}
+
+function predictRenderRuns() {
+  const runs = state.predict.runs || [];
+  const empty = '<tr><td colspan="8" class="empty">还没有预测任务。</td></tr>';
+  const recent = $('#predict-recent-table tbody');
+  const all = $('#predict-runs-table tbody');
+  if (recent) recent.innerHTML = runs.length ? runs.slice(0, 8).map(predictRunRow).join('') : empty;
+  if (all) all.innerHTML = runs.length ? runs.map(predictRunRow).join('') : empty;
+  const recentHint = $('#predict-recent-hint');
+  if (recentHint) recentHint.textContent = runs.length + ' 个预测任务';
+  const runsHint = $('#predict-runs-hint');
+  if (runsHint) runsHint.textContent = runs.length + ' 个任务 · 执行器待接入';
+  const sel = $('#predict-result-run');
+  if (sel) {
+    const previous = sel.value;
+    sel.innerHTML = '<option value="">选择任务</option>' + runs.map(r =>
+      '<option value="' + esc(r.id) + '">#' + esc(r.id) + ' · ' + esc(r.name) + ' · ' + esc(r.model_name || '') + '</option>').join('');
+    if (previous && runs.some(r => String(r.id) === previous)) sel.value = previous;
+  }
+}
+
+async function loadPredictRuns(silent) {
+  try {
+    const d = await api('/api/predict/runs');
+    state.predict.runs = d || [];
+    predictRenderRuns();
+    if (state.predict.selectedRunId) {
+      const run = state.predict.runs.find(r => r.id === state.predict.selectedRunId);
+      if (run) await loadPredictArtifacts(run.id);
+    }
+  } catch (e) { if (!silent) toast(e.message, true); }
+}
+
+function predictRunDetailHtml(run) {
+  const rows = [
+    ['状态', predictRunStatus(run)],
+    ['模型', esc(run.model_name || '—')],
+    ['运行位置', esc(run.location === 'hpc' ? '超算' : '本地')],
+    ['echos', esc(run.echos)],
+    ['目标性能', esc(run.target || '—')],
+    ['保存根目录', '<code>' + esc(run.save_root || '—') + '</code>'],
+    ['运行目录', '<code>' + esc(run.run_dir || '—') + '</code>'],
+    ['保存点', '<code>' + esc(run.resume_from || '—') + '</code>'],
+    ['创建时间', esc(run.created_at || '—')],
+  ];
+  return rows.map(r => '<div class="row"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>').join('');
+}
+
+function predictRenderCheckpoints(data) {
+  const box = $('#predict-run-checkpoints');
+  if (!box) return;
+  const items = (data && data.checkpoint_preview) || [];
+  const run = data && data.run;
+  if (!items.length) {
+    box.innerHTML = '<div class="empty">运行目录 checkpoints/ 里还没有 .ckpt 文件。' +
+      (run && run.resume_from ? '当前配置从外部保存点继续：<code>' + esc(run.resume_from) + '</code>' : '') + '</div>';
+    return;
+  }
+  box.innerHTML = items.map(x => '<div class="predict-checkpoint-item"><b>' + esc(x.name) + '</b>' +
+    '<code>' + esc(hpcFmtBytes(x.size)) + ' · ' + esc(x.path) + '</code></div>').join('');
+}
+
+async function loadPredictArtifacts(runId) {
+  try {
+    const d = await api('/api/predict/runs/' + runId + '/artifacts');
+    if (state.predict.selectedRunId !== runId) return;
+    state.predict.artifacts = d;
+    const run = d.run || {};
+    const hint = $('#predict-run-hint');
+    if (hint) hint.textContent = '#' + run.id + ' · ' + run.name;
+    const detail = $('#predict-run-detail');
+    if (detail) detail.innerHTML = predictRunDetailHtml(run);
+    predictRenderCheckpoints(d);
+    if (state.view === 'predict-results') predictShowResult(d);
+  } catch (e) { toast(e.message, true); }
+}
+
+function predictOpenRun(runId) {
+  const id = Number(runId);
+  const run = (state.predict.runs || []).find(r => r.id === id);
+  if (!run) { toast('预测任务不存在', true); return; }
+  state.predict.selectedRunId = id;
+  const hint = $('#predict-run-hint');
+  if (hint) hint.textContent = '#' + run.id + ' · ' + run.name;
+  const detail = $('#predict-run-detail');
+  if (detail) detail.innerHTML = predictRunDetailHtml(run);
+  loadPredictArtifacts(id);
+}
+
+function predictShowResult(d) {
+  const summary = $('#predict-result-summary');
+  const box = $('#predict-artifacts');
+  const hint = $('#predict-result-hint');
+  if (!summary || !box) return;
+  if (!d || !d.run) {
+    summary.innerHTML = '<div class="empty">还没有选择预测任务。</div>';
+    box.innerHTML = '';
+    if (hint) hint.textContent = '选择完成的预测任务';
+    return;
+  }
+  const run = d.run;
+  if (hint) hint.textContent = '#' + run.id + ' · ' + run.name;
+  summary.innerHTML = '<div class="row"><span>任务</span><b>' + esc(run.name) + '</b></div>' +
+    '<div class="row"><span>状态</span><b>' + predictRunStatus(run) + '</b></div>' +
+    '<div class="row"><span>原始输出</span><b>' + esc(d.json_count) + ' 个 JSON · ' + esc(d.cif_count) + ' 个 CIF</b></div>' +
+    '<div class="row"><span>保存点</span><b>' + esc(d.checkpoint_count) + ' 个</b></div>' +
+    '<div class="row"><span>运行目录</span><b><code>' + esc(run.run_dir || '—') + '</code></b></div>';
+  const files = (d.json_preview || []).concat(d.cif_preview || []);
+  box.innerHTML = files.length ? files.map(x => '<div class="row"><span>' + esc(x.name) + '</span><code>' + esc(x.path) + '</code></div>').join('')
+    : '<div class="empty">还没有可读取的输出文件。执行器和转换器接入后会出现在这里。</div>';
+}
+
+async function loadPredictResults() {
+  if (!state.predict.runs.length) await loadPredictRuns(true);
+  predictRenderRuns();
+  const sel = $('#predict-result-run');
+  if (sel && !sel.value && state.predict.selectedRunId) sel.value = String(state.predict.selectedRunId);
+  if (sel && sel.value) {
+    state.predict.selectedRunId = Number(sel.value);
+    await loadPredictArtifacts(state.predict.selectedRunId);
+  } else if (sel && state.predict.selectedRunId) {
+    sel.value = String(state.predict.selectedRunId);
+    await loadPredictArtifacts(state.predict.selectedRunId);
+  } else {
+    predictShowResult(null);
+  }
+}
+
+async function loadPredictWorkbench() {
+  predictApplySettings();
+  await Promise.all([loadPredictModels(false), loadPredictRuns(true)]);
+  predictUpdateSummary();
+}
+
+async function loadPredictModelsPage() {
+  predictApplySettings();
+  await loadPredictModels(false);
+  predictRenderModels();
+}
+
+async function scanPredictCheckpoints() {
+  const path = $('#predict-ckpt-dir') ? $('#predict-ckpt-dir').value.trim() : '';
+  const sel = $('#predict-ckpt');
+  if (!path) { toast('请填写保存点目录', true); return; }
+  if (sel) sel.innerHTML = '<option value="">扫描中…</option>';
+  try {
+    const d = await api('/api/predict/checkpoints?path=' + encodeURIComponent(path));
+    state.predict.checkpoints = d.items || [];
+    if (sel) sel.innerHTML = '<option value="">不使用保存点</option>' + state.predict.checkpoints.map(x =>
+      '<option value="' + esc(x.path) + '">' + esc(x.label) +
+      (x.epoch != null ? ' · epoch ' + esc(x.epoch) : '') +
+      (x.step != null ? ' · step ' + esc(x.step) : '') +
+      ' · ' + esc(hpcFmtBytes(x.size)) + '</option>').join('');
+    toast('找到 ' + d.total + ' 个保存点');
+  } catch (e) {
+    state.predict.checkpoints = [];
+    if (sel) sel.innerHTML = '<option value="">扫描失败</option>';
+    toast(e.message, true);
+  }
+}
+
+async function predictCreateRun() {
+  const location = $('#predict-location').value;
+  if (location === 'hpc') { toast('超算预测执行器尚未接入，请先选本地', true); return; }
+  const model = predictCurrentModel();
+  if (!model) { predictSetStatus('请先选择预训练模型', true); return; }
+  const saveRoot = $('#predict-save-root').value.trim();
+  if (!saveRoot) { predictSetStatus('请选择保存根目录', true); return; }
+  const resume = $('#predict-resume').checked;
+  const payload = {
+    name: $('#predict-name').value.trim(),
+    location,
+    model_path: model.path,
+    echos: Number($('#predict-echos').value) || 30,
+    target: $('#predict-target').value.trim(),
+    preference: Number($('#predict-preference').value),
+    input_path: $('#predict-input').value.trim(),
+    save_root: saveRoot,
+    resume_from: resume && $('#predict-ckpt') ? $('#predict-ckpt').value : '',
+  };
+  const btn = $('#predict-create');
+  btn.disabled = true; btn.textContent = '创建中…';
+  predictSetStatus('正在创建运行目录…');
+  try {
+    const run = await api('/api/predict/runs', { method: 'POST', body: payload });
+    state.predict.runs.unshift(run);
+    state.predict.selectedRunId = run.id;
+    predictRenderRuns();
+    predictSetStatus('已创建预测配置：' + run.run_dir);
+    toast('已创建运行目录');
+    switchView('predict-runs');
+    state.predict.selectedRunId = run.id;
+    predictOpenRun(run.id);
+  } catch (e) {
+    predictSetStatus(e.message, true);
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '保存预测配置';
+    predictUpdateSummary();
+  }
+}
+
+async function predictSaveSettings() {
+  const body = {
+    predict_model_root: $('#predict-model-root').value.trim(),
+    predict_checkpoint_root: $('#predict-checkpoint-root').value.trim(),
+    predict_work_root: $('#predict-work-root').value.trim(),
+  };
+  try {
+    state.settings = await api('/api/settings', { method: 'POST', body });
+    predictSettingsStatus('路径已保存');
+    applyPredictSettingsAfterSave();
+    await loadPredictModels(true);
+    toast('预测路径已保存');
+  } catch (e) { predictSettingsStatus(e.message, true); }
+}
+
+function applyPredictSettingsAfterSave() {
+  const s = state.settings || {};
+  if ($('#predict-save-root') && !$('#predict-save-root').value) $('#predict-save-root').value = s.predict_work_root || '';
+  if ($('#predict-ckpt-dir') && !$('#predict-ckpt-dir').value) $('#predict-ckpt-dir').value = s.predict_checkpoint_root || '';
+}
+
+function predictResetForm() {
+  if ($('#predict-name')) $('#predict-name').value = '';
+  if ($('#predict-echos')) $('#predict-echos').value = 30;
+  if ($('#predict-target')) $('#predict-target').value = '';
+  if ($('#predict-preference')) $('#predict-preference').value = 0.5;
+  if ($('#predict-pref-value')) $('#predict-pref-value').textContent = '0.5';
+  if ($('#predict-input')) $('#predict-input').value = '';
+  if ($('#predict-resume')) $('#predict-resume').checked = false;
+  if ($('#predict-resume-box')) $('#predict-resume-box').classList.add('hidden');
+  if ($('#predict-ckpt')) $('#predict-ckpt').innerHTML = '<option value="">先扫描目录</option>';
+  if ($('#predict-location')) $('#predict-location').value = 'local';
+  if ($('#predict-save-root')) $('#predict-save-root').value = (state.settings || {}).predict_work_root || '';
+  predictSetStatus('');
+  predictUpdateSummary();
+}
+
+function predictPick(id, kind, title) {
+  pickPath(kind, id, title);
+}
+
 function bind() {
   const skinBtn = $('#skin-toggle');
   if (skinBtn) skinBtn.onclick = (e) => {
@@ -2324,6 +2754,62 @@ function bind() {
       try { localStorage.setItem('mofui.hpcSkipWfn', skipWfn.checked ? '1' : '0'); } catch (e) {}
     };
   }
+
+  const predictModel = $('#predict-model');
+  if (predictModel) predictModel.onchange = () => { predictRenderModelMeta(); predictUpdateSummary(); };
+  const predictLocation = $('#predict-location');
+  if (predictLocation) predictLocation.onchange = predictUpdateSummary;
+  ['#predict-name', '#predict-echos', '#predict-save-root', '#predict-target'].forEach(sel => {
+    const el = $(sel); if (el) el.oninput = predictUpdateSummary;
+  });
+  const pref = $('#predict-preference');
+  if (pref) pref.oninput = () => {
+    const v = $('#predict-pref-value'); if (v) v.textContent = pref.value;
+    predictUpdateSummary();
+  };
+  const resume = $('#predict-resume');
+  if (resume) resume.onchange = () => {
+    const box = $('#predict-resume-box');
+    if (box) box.classList.toggle('hidden', !resume.checked);
+    predictUpdateSummary();
+  };
+  if ($('#predict-refresh-models')) $('#predict-refresh-models').onclick = () => loadPredictModels(true);
+  if ($('#predict-refresh-model-grid')) $('#predict-refresh-model-grid').onclick = () => loadPredictModels(true);
+  if ($('#predict-rescan-models')) $('#predict-rescan-models').onclick = () => loadPredictModels(true);
+  if ($('#predict-scan-ckpt')) $('#predict-scan-ckpt').onclick = scanPredictCheckpoints;
+  if ($('#predict-create')) $('#predict-create').onclick = predictCreateRun;
+  if ($('#predict-reset')) $('#predict-reset').onclick = predictResetForm;
+  if ($('#predict-save-settings')) $('#predict-save-settings').onclick = predictSaveSettings;
+  if ($('#predict-refresh-recent')) $('#predict-refresh-recent').onclick = () => loadPredictRuns(false);
+  if ($('#predict-refresh-runs')) $('#predict-refresh-runs').onclick = () => loadPredictRuns(false);
+  if ($('#predict-refresh-artifacts')) $('#predict-refresh-artifacts').onclick = () => {
+    if (state.predict.selectedRunId) loadPredictArtifacts(state.predict.selectedRunId);
+  };
+  if ($('#predict-load-results')) $('#predict-load-results').onclick = loadPredictResults;
+  const resultRun = $('#predict-result-run');
+  if (resultRun) resultRun.onchange = () => {
+    state.predict.selectedRunId = resultRun.value ? Number(resultRun.value) : null;
+    if (state.predict.selectedRunId) loadPredictArtifacts(state.predict.selectedRunId);
+    else predictShowResult(null);
+  };
+  ['#predict-pick-input', '#predict-pick-save', '#predict-pick-ckpt', '#predict-pick-model-root', '#predict-pick-checkpoint-root', '#predict-pick-work-root'].forEach(sel => {
+    const el = $(sel); if (!el) return;
+    el.onclick = () => {
+      const target = sel.replace('#predict-pick-', '');
+      const ids = { input: 'predict-input', save: 'predict-save-root', ckpt: 'predict-ckpt-dir', 'model-root': 'predict-model-root', 'checkpoint-root': 'predict-checkpoint-root', 'work-root': 'predict-work-root' };
+      const kind = target === 'input' ? 'file' : 'dir';
+      predictPick(ids[target] || target, kind, '选择' + (target === 'input' ? '结构文件' : '目录'));
+    };
+  });
+  const predictTables = ['#predict-recent-table', '#predict-runs-table'];
+  predictTables.forEach(sel => {
+    const table = $(sel);
+    if (!table) return;
+    table.onclick = (e) => {
+      const b = e.target.closest('[data-predict-open]');
+      if (b) predictOpenRun(Number(b.dataset.predictOpen));
+    };
+  });
 
   const hpcList = (side) => $(side === 'local' ? '#hpc-local-list' : '#hpc-remote-list');
   if (hpcList('local')) hpcList('local').onchange = (e) => {

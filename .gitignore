@@ -14,6 +14,7 @@ data/
 runs/
 one_click_mof/data/
 one_click_mof/runs/
+one_click_mof/predictions/
 *.sqlite3
 *.sqlite3-*
 *.log

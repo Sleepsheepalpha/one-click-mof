@@ -19,6 +19,7 @@ import json
 import mimetypes
 import markdown
 import hpc
+import mof_predict
 import os
 import posixpath
 import re
@@ -66,6 +67,9 @@ DEFAULT_SETTINGS = {
     "hpc_user": "",
     "hpc_remote_root": "",
     "hpc_refresh_s": 60,
+    "predict_model_root": mof_predict.default_model_root(),
+    "predict_checkpoint_root": mof_predict.default_checkpoint_root(),
+    "predict_work_root": str(ROOT / "predictions"),
 }
 
 
@@ -151,6 +155,30 @@ def init_db():
             created_at TEXT NOT NULL,
             updated_at TEXT,
             error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS prediction_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT 'local',
+            model_path TEXT,
+            model_name TEXT,
+            target TEXT,
+            preference REAL,
+            echos INTEGER DEFAULT 30,
+            input_path TEXT,
+            save_root TEXT,
+            run_dir TEXT,
+            resume_from TEXT,
+            status TEXT NOT NULL DEFAULT 'configured',
+            stage TEXT NOT NULL DEFAULT 'configured',
+            progress INTEGER DEFAULT 0,
+            host TEXT,
+            user TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            started_at TEXT,
+            finished_at TEXT
         );
         """)
         con.commit()
@@ -1064,6 +1092,105 @@ def hpc_settings_payload():
     }
 
 
+PREDICT_ACTIVE = {"configured", "queued", "running"}
+PREDICT_STATUS_LABELS = {
+    "configured": "已配置", "queued": "排队", "running": "运行中",
+    "done": "完成", "failed": "失败", "cancelled": "已取消",
+}
+
+
+def predict_run_dict(row):
+    d = dict(row)
+    d["active"] = d.get("status") in PREDICT_ACTIVE
+    d["status_label"] = PREDICT_STATUS_LABELS.get(d.get("status"), d.get("status") or "—")
+    return d
+
+
+def predict_runs_list():
+    with connect() as con:
+        rows = con.execute("SELECT * FROM prediction_runs ORDER BY id DESC LIMIT 300").fetchall()
+    return [predict_run_dict(r) for r in rows]
+
+
+def predict_run_get(run_id):
+    with connect() as con:
+        row = con.execute("SELECT * FROM prediction_runs WHERE id=?", (run_id,)).fetchone()
+    return predict_run_dict(row) if row else None
+
+
+def predict_run_artifacts(run_id):
+    run = predict_run_get(run_id)
+    if not run:
+        raise ValueError("预测任务不存在")
+    data = mof_predict.scan_artifacts(run.get("run_dir") or "")
+    data["run"] = run
+    return data
+
+
+def predict_create_run(body):
+    location = str(body.get("location") or "local").strip()
+    if location != "local":
+        raise ValueError("超算预测执行器尚未接入；当前先完成本地最小成果。")
+    name = str(body.get("name") or "").strip() or ("prediction_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+    model_path = str(body.get("model_path") or "").strip()
+    model = Path(model_path).expanduser().resolve() if model_path else None
+    if not model or not model.is_file():
+        raise ValueError("请选择有效的预训练模型文件")
+    raw_base = str(body.get("save_root") or "").strip()
+    if not raw_base:
+        raise ValueError("请选择保存根目录")
+    base = Path(raw_base).expanduser().resolve()
+    if base.exists() and not base.is_dir():
+        raise ValueError("保存根目录不是文件夹：" + str(base))
+    resume = str(body.get("resume_from") or "").strip()
+    if resume:
+        rp = Path(resume).expanduser().resolve()
+        if not rp.is_file():
+            raise ValueError("保存点文件不存在：" + str(rp))
+        resume = str(rp)
+    input_path = str(body.get("input_path") or "").strip()
+    if input_path:
+        ip = Path(input_path).expanduser().resolve()
+        if not ip.exists():
+            raise ValueError("初始结构路径不存在：" + str(ip))
+        input_path = str(ip)
+    try:
+        echos = max(1, min(10000, int(body.get("echos") or 30)))
+        preference = float(body.get("preference")) if body.get("preference") not in (None, "") else None
+    except (TypeError, ValueError):
+        raise ValueError("echos 或偏好强度格式不正确")
+    spec = {
+        "name": name, "location": location, "model_path": str(model),
+        "target": str(body.get("target") or "").strip(),
+        "preference": preference, "echos": echos,
+        "input_path": input_path, "resume_from": resume,
+    }
+    with connect() as con:
+        cur = con.execute(
+            "INSERT INTO prediction_runs(name,location,model_path,model_name,target,preference,echos,"
+            "input_path,save_root,resume_from,status,stage,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (name, location, str(model), model.name, spec["target"], preference, echos,
+             input_path, str(base), resume, "configured", "configured", now(), now()),
+        )
+        con.commit()
+        run_id = cur.lastrowid
+    try:
+        record = mof_predict.prepare_run(run_id, spec, base)
+        with connect() as con:
+            con.execute(
+                "UPDATE prediction_runs SET run_dir=?, updated_at=? WHERE id=?",
+                (record["save_dir"], now(), run_id),
+            )
+            con.commit()
+    except Exception:
+        with connect() as con:
+            con.execute("DELETE FROM prediction_runs WHERE id=?", (run_id,))
+            con.commit()
+        raise
+    return predict_run_get(run_id)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "One-Click-MOF/" + __version__
 
@@ -1165,6 +1292,30 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, job)
                 except hpc.HpcError as exc:
                     return self._send(400, {"error": str(exc)})
+            if path == "/api/predict/models":
+                try:
+                    return self._send(200, mof_predict.scan_models(load_settings()))
+                except Exception as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/predict/checkpoints":
+                try:
+                    return self._send(200, mof_predict.scan_checkpoints(q.get("path", [""])[0]))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+            if path == "/api/predict/runs":
+                return self._send(200, predict_runs_list())
+            m = re.match(r"^/api/predict/runs/(\d+)/artifacts$", path)
+            if m:
+                try:
+                    return self._send(200, predict_run_artifacts(int(m.group(1))))
+                except ValueError as exc:
+                    return self._send(404, {"error": str(exc)})
+            m = re.match(r"^/api/predict/runs/(\d+)$", path)
+            if m:
+                run = predict_run_get(int(m.group(1)))
+                if not run:
+                    return self._send(404, {"error": "预测任务不存在"})
+                return self._send(200, run)
             m = re.match(r"^/api/hpc/tasks/(\d+)/log$", path)
             if m:
                 try:
@@ -1298,6 +1449,13 @@ class Handler(BaseHTTPRequestHandler):
             u = urlparse(self.path)
             path = u.path
             body = self._json()
+            if path == "/api/predict/runs":
+                try:
+                    return self._send(200, predict_create_run(body))
+                except ValueError as exc:
+                    return self._send(400, {"error": str(exc)})
+                except Exception as exc:
+                    return self._send(500, {"error": "创建预测任务失败：" + str(exc)})
             if path == "/api/hpc/test":
                 try:
                     return self._send(200, hpc.test_connection(

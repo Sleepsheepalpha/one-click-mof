@@ -32,6 +32,7 @@
     <div class="workspace-switch">
       <button type="button" class="workspace-btn active" data-workspace="local">本地</button>
       <button type="button" class="workspace-btn" data-workspace="hpc">超算</button>
+      <button type="button" class="workspace-btn" data-workspace="predict">预测</button>
     </div>
     <nav class="nav local-nav" id="local-nav">
       <button class="nav-item active" data-view="projects"><span>01</span> 项目与文件</button>
@@ -47,6 +48,12 @@
       <button class="nav-item" data-view="hpc-tasks"><span>03</span> 任务</button>
       <button class="nav-item" data-view="hpc-tools"><span>04</span> 工具设置</button>
       <button class="nav-item" data-view="hpc-settings"><span>05</span> 通用设置</button>
+    </nav>
+    <nav class="nav predict-nav" id="predict-nav">
+      <button class="nav-item" data-view="predict-workbench"><span>01</span> 预测工作台</button>
+      <button class="nav-item" data-view="predict-runs"><span>02</span> 任务与保存点</button>
+      <button class="nav-item" data-view="predict-results"><span>03</span> 结果与转换</button>
+      <button class="nav-item" data-view="predict-models"><span>04</span> 模型与路径</button>
     </nav>
     <div class="skin-picker">
       <button type="button" class="skin-toggle" id="skin-toggle" aria-expanded="false">
@@ -344,6 +351,167 @@
         </div>
         <div id="hpc-settings-status" class="hpc-status"></div>
         <div class="hpc-account" id="hpc-account"></div>
+      </div>
+    </section>
+
+    <!-- 预测：工作台 -->
+    <section class="view" id="view-predict-workbench">
+      <div class="predict-banner">
+        <b>预测 / 计算并列</b>
+        <span>先把本地最小成果跑通，再进入超算规模化。当前版本先搭好配置、保存点、结果交接和执行器接口。</span>
+      </div>
+      <div class="grid two">
+        <div class="card">
+          <div class="card-head">
+            <div><h2>新建预测</h2><span class="hint" id="predict-model-hint">正在扫描本地模型…</span></div>
+            <button class="btn small ghost" id="predict-refresh-models">刷新模型</button>
+          </div>
+          <div class="predict-form">
+            <label>任务名称<input id="predict-name" placeholder="例如 qkh_echo30_local" autocomplete="off"></label>
+            <label>预训练模型<select id="predict-model"></select></label>
+            <div class="predict-model-meta" id="predict-model-meta">尚未选择模型</div>
+            <div class="form-row">
+              <label>运行位置<select id="predict-location">
+                <option value="local">本地（先跑通）</option>
+                <option value="hpc">超算（待接入）</option>
+              </select></label>
+              <label>echos<input id="predict-echos" type="number" value="30" min="1" max="10000"></label>
+            </div>
+            <div class="hint" id="predict-location-note">本地执行器将使用本机 GPU；当前是框架，尚未启动推理。</div>
+            <div class="hint">echos 是迭代节点；你之前的经验是 30 多个 echos 后逐步收敛。</div>
+            <details class="predict-advanced">
+              <summary>目标性能与偏好强度（为后续预留）</summary>
+              <div class="form-row">
+                <label>目标性能<input id="predict-target" placeholder="例如 qkh / selectivity"></label>
+                <label>偏好强度<input id="predict-preference" type="range" min="0" max="1" step="0.1" value="0.5"><span class="hint" id="predict-pref-value">0.5</span></label>
+              </div>
+              <div class="hint">当前仍以预训练模型为准；后续可改为“选择性能标签 + 偏好强度”来检索模型。</div>
+            </details>
+            <label>初始结构（可选）
+              <div class="path-row">
+                <input id="predict-input" placeholder="CIF / 目录；生成式推理可留空">
+                <button type="button" class="btn pick" id="predict-pick-input">浏览…</button>
+              </div>
+            </label>
+            <label>保存根目录
+              <div class="path-row">
+                <input id="predict-save-root" placeholder="/home/.../predictions">
+                <button type="button" class="btn pick" id="predict-pick-save">浏览…</button>
+              </div>
+            </label>
+            <div class="hint" id="predict-save-hint">每次会在此目录下自动创建独立运行目录。</div>
+            <label class="check-line"><input type="checkbox" id="predict-resume"> 从保存点继续</label>
+            <div class="predict-resume-box hidden" id="predict-resume-box">
+              <div class="form-row">
+                <label>保存点目录
+                  <div class="path-row">
+                    <input id="predict-ckpt-dir" placeholder="包含 .ckpt 的目录">
+                    <button type="button" class="btn pick" id="predict-pick-ckpt">浏览…</button>
+                  </div>
+                </label>
+                <button type="button" class="btn ghost" id="predict-scan-ckpt">扫描保存点</button>
+              </div>
+              <label>保存点<select id="predict-ckpt"><option value="">先扫描目录</option></select></label>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="btn primary" id="predict-create">保存预测配置</button>
+              <button type="button" class="btn ghost" id="predict-reset">重置</button>
+            </div>
+            <div id="predict-status" class="hpc-status"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>流程</h2><span class="hint">预测 → 转换 → 计算 → 配液</span></div>
+          <div class="predict-flow">
+            <div><b>1</b><span>选择模型与运行位置</span></div>
+            <div><b>2</b><span>设置 echos 与保存目录</span></div>
+            <div><b>3</b><span>可选：从 checkpoint 继续</span></div>
+            <div><b>4</b><span>推理输出 → 转换为 CIF</span></div>
+            <div><b>5</b><span>结果处理 → 交给计算/配液</span></div>
+          </div>
+          <div class="notice">
+            <b>当前框架状态</b>：会真实创建运行目录、run.json 和保存点目录；本地推理、CIF 转换和结果处理适配器尚未接入。
+          </div>
+          <div class="predict-summary" id="predict-summary"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div><h2>最近预测</h2><span class="hint" id="predict-recent-hint">—</span></div><button class="btn small ghost" id="predict-refresh-recent">刷新</button></div>
+        <div class="table-wrap"><table class="table" id="predict-recent-table"><thead><tr><th>#</th><th>名称</th><th>模型</th><th>位置</th><th>echos</th><th>状态</th><th>保存目录</th><th>操作</th></tr></thead><tbody><tr><td colspan="8" class="empty">还没有预测任务。</td></tr></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- 预测：任务与保存点 -->
+    <section class="view" id="view-predict-runs">
+      <div class="card">
+        <div class="card-head"><div><h2>预测任务</h2><span class="hint" id="predict-runs-hint">—</span></div><div class="toolbar"><button class="btn small ghost" id="predict-refresh-runs">刷新</button></div></div>
+        <div class="table-wrap"><table class="table" id="predict-runs-table"><thead><tr><th>#</th><th>名称</th><th>模型</th><th>位置</th><th>echos</th><th>状态</th><th>保存目录</th><th class="w-actions">操作</th></tr></thead><tbody><tr><td colspan="8" class="empty">还没有预测任务。</td></tr></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div><h2>保存点与运行目录</h2><span class="hint" id="predict-run-hint">在任务列表里选择一个任务</span></div><button class="btn small ghost" id="predict-refresh-artifacts">刷新保存点</button></div>
+        <div id="predict-run-detail" class="predict-run-detail"><div class="empty">尚未选择任务。</div></div>
+        <div id="predict-run-checkpoints" class="predict-checkpoint-list"></div>
+      </div>
+    </section>
+
+    <!-- 预测：结果与转换 -->
+    <section class="view" id="view-predict-results">
+      <div class="card">
+        <div class="card-head">
+          <div><h2>结果与转换</h2><span class="hint" id="predict-result-hint">选择完成的预测任务</span></div>
+          <div class="toolbar">
+            <select class="select" id="predict-result-run"><option value="">选择任务</option></select>
+            <button class="btn small ghost" id="predict-load-results">读取结果</button>
+          </div>
+        </div>
+        <div id="predict-result-summary" class="predict-result-summary"><div class="empty">还没有选择预测任务。</div></div>
+        <div class="predict-result-actions">
+          <button class="btn" id="predict-convert-cif" disabled>转换为 CIF</button>
+          <button class="btn ghost" id="predict-process-results" disabled>结果处理</button>
+          <button class="btn ghost" id="predict-send-calc" disabled>发送到计算</button>
+          <button class="btn ghost" id="predict-send-liquid" disabled>发送到自动配液</button>
+          <span class="hint">转换器、处理流程和下游串联接口预留；接入后按钮启用。</span>
+        </div>
+        <div id="predict-artifacts" class="predict-artifacts"></div>
+      </div>
+    </section>
+
+    <!-- 预测：模型与路径 -->
+    <section class="view" id="view-predict-models">
+      <div class="grid two">
+        <div class="card">
+          <div class="card-head"><h2>模型与路径</h2><span class="hint">本地优先</span></div>
+          <div class="predict-form">
+            <label>模型根目录
+              <div class="path-row"><input id="predict-model-root" data-setting="predict_model_root"><button type="button" class="btn pick" id="predict-pick-model-root">浏览…</button></div>
+            </label>
+            <label>保存点根目录
+              <div class="path-row"><input id="predict-checkpoint-root" data-setting="predict_checkpoint_root"><button type="button" class="btn pick" id="predict-pick-checkpoint-root">浏览…</button></div>
+            </label>
+            <label>默认保存根目录
+              <div class="path-row"><input id="predict-work-root" data-setting="predict_work_root"><button type="button" class="btn pick" id="predict-pick-work-root">浏览…</button></div>
+            </label>
+            <div class="form-actions">
+              <button class="btn primary" id="predict-save-settings">保存路径</button>
+              <button class="btn ghost" id="predict-rescan-models">重新扫描</button>
+            </div>
+            <div id="predict-settings-status" class="hpc-status"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>执行器接入</h2><span class="hint">下一阶段</span></div>
+          <div class="predict-adapter-list">
+            <div><b>本地推理</b><span class="status queued">未接入</span><small>契约：输出 output/ 与 logs/run.log</small></div>
+            <div><b>checkpoint → CIF</b><span class="status queued">未接入</span><small>契约：输出 output/cif/*.cif</small></div>
+            <div><b>超算预测</b><span class="status queued">规划中</span><small>本地跑通后接入 Slurm 适配器</small></div>
+            <div><b>结果处理</b><span class="status queued">对接中</span><small>处理 output/ 并写 summary.json</small></div>
+          </div>
+          <div class="notice">模型与保存点扫描是真实可用的；执行器只预留接口，不会伪造生成结果。</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div><h2>发现的模型</h2><span class="hint" id="predict-model-count">—</span></div><button class="btn small ghost" id="predict-refresh-model-grid">刷新</button></div>
+        <div id="predict-model-grid" class="predict-model-grid"><div class="empty">尚未扫描。</div></div>
       </div>
     </section>
 
