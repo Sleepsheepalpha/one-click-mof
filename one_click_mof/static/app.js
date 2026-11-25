@@ -15,11 +15,15 @@ const state = {
   filter: { key: '', op: 'lt', value: '' },
   logTimer: null,
   tutorial: { files: [], current: 'README.md', visible: true },
-  workspace: (() => {
+  area: (() => {
     try {
-      const ws = localStorage.getItem('mofui.workspace');
-      return ws === 'hpc' || ws === 'predict' ? ws : 'local';
-    } catch (e) { return 'local'; }
+      const a = localStorage.getItem('mofui.area');
+      return a === 'predict' || a === 'liquid' ? a : 'calc';
+    } catch (e) { return 'calc'; }
+  })(),
+  workspace: (() => {
+    try { return localStorage.getItem('mofui.workspace') === 'hpc' ? 'hpc' : 'local'; }
+    catch (e) { return 'local'; }
   })(),
   localOnline: null,
   view: 'projects',
@@ -55,6 +59,7 @@ const TITLES = {
   'predict-runs': ['任务与保存点', '预测配置、checkpoint 和运行目录。'],
   'predict-results': ['结果与转换', '推理输出转换为 CIF，并交给后续处理或计算。'],
   'predict-models': ['模型与路径', '本地预训练模型、保存点和执行器接入状态。'],
+  liquid: ['配液工作台', '自动配液系统的本地展示与超算批量调度骨架。'],
 };
 
 async function api(path, opts = {}) {
@@ -323,41 +328,84 @@ function statusHtml(s) {
   return '<span class="status ' + esc(s || '') + '">' + esc(statusText(s)) + '</span>';
 }
 
-function switchWorkspace(ws) {
-  state.workspace = ws === 'hpc' || ws === 'predict' ? ws : 'local';
-  try { localStorage.setItem('mofui.workspace', state.workspace); } catch (e) {}
+function applyAreaWorkspaceUI() {
+  $$('.project-btn').forEach(b => b.classList.toggle('active', b.dataset.area === state.area));
   $$('.workspace-btn').forEach(b => b.classList.toggle('active', b.dataset.workspace === state.workspace));
-  if (state.workspace === 'hpc') {
+  document.body.classList.toggle('area-calc', state.area === 'calc');
+  document.body.classList.toggle('area-predict', state.area === 'predict');
+  document.body.classList.toggle('area-liquid', state.area === 'liquid');
+  document.body.classList.toggle('workspace-local', state.workspace === 'local');
+  document.body.classList.toggle('workspace-hpc', state.workspace === 'hpc');
+  try {
+    localStorage.setItem('mofui.area', state.area);
+    localStorage.setItem('mofui.workspace', state.workspace);
+  } catch (e) {}
+  renderServiceStatus();
+}
+
+function switchArea(area) {
+  state.area = area === 'predict' || area === 'liquid' ? area : 'calc';
+  applyAreaWorkspaceUI();
+  if (state.area === 'predict') {
+    switchView(state.view && state.view.startsWith('predict-') ? state.view : 'predict-workbench');
+  } else if (state.area === 'liquid') {
+    switchView('liquid');
+  } else if (state.workspace === 'hpc') {
     switchView(state.hpc.token ? 'hpc-dashboard' : 'hpc-login');
-  } else if (state.workspace === 'predict') {
-    switchView('predict-workbench');
   } else {
     switchView('projects');
   }
-  renderServiceStatus();
+}
+
+function switchWorkspace(ws) {
+  state.workspace = ws === 'hpc' ? 'hpc' : 'local';
+  applyAreaWorkspaceUI();
+  if (state.area === 'predict') {
+    switchView(state.view && state.view.startsWith('predict-') ? state.view : 'predict-workbench');
+  } else if (state.area === 'liquid') {
+    switchView('liquid');
+  } else if (state.workspace === 'hpc') {
+    switchView(state.hpc.token ? 'hpc-dashboard' : 'hpc-login');
+  } else {
+    switchView('projects');
+  }
 }
 
 function switchView(name) {
   if (name && name.startsWith('hpc-')) {
+    state.area = 'calc';
     state.workspace = 'hpc';
-    try { localStorage.setItem('mofui.workspace', 'hpc'); } catch (e) {}
-  }
-  if (name && name.startsWith('predict-')) {
-    state.workspace = 'predict';
-    try { localStorage.setItem('mofui.workspace', 'predict'); } catch (e) {}
+  } else if (name && name.startsWith('predict-')) {
+    state.area = 'predict';
+  } else if (name === 'liquid') {
+    state.area = 'liquid';
+  } else {
+    state.area = 'calc';
+    state.workspace = 'local';
   }
   if (name !== 'hpc-login' && name && name.startsWith('hpc-') && !state.hpc.token) name = 'hpc-login';
   state.view = name;
-  $$('.workspace-btn').forEach(b => b.classList.toggle('active', b.dataset.workspace === state.workspace));
+  applyAreaWorkspaceUI();
   $$('.nav-item').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   const t = TITLES[name] || TITLES.projects;
-  $('#page-title').textContent = t[0];
-  $('#page-sub').textContent = t[1];
-  if (name.startsWith('hpc-')) {
+  let title = t[0];
+  let sub = t[1];
+  if (state.area === 'predict' && state.workspace === 'hpc') {
+    title += ' · 超算';
+    sub = '超算预测执行器待接入；模型和保存点仍使用本地资源。';
+  } else if (state.area === 'liquid') {
+    title = state.workspace === 'hpc' ? '配液 · 超算工作区' : '配液 · 本地工作区';
+    sub = state.workspace === 'hpc' ? '大型/批量配液调度骨架，执行器待接入。' : '配方展示与本地可行性检查骨架，执行器待接入。';
+  }
+  $('#page-title').textContent = title;
+  $('#page-sub').textContent = sub;
+  if (state.workspace === 'hpc') {
     $('#project-pill').textContent = state.hpc.token ? (state.hpc.user + '@' + state.hpc.host) : '未登录超算';
-  } else if (name.startsWith('predict-')) {
-    $('#project-pill').textContent = '预测器 · 本地';
+  } else if (state.area === 'predict') {
+    $('#project-pill').textContent = '预测 · 本地';
+  } else if (state.area === 'liquid') {
+    $('#project-pill').textContent = '配液 · 本地';
   } else if (state.project) {
     $('#project-pill').textContent = state.project.name + ' · ' + state.project.input_dir;
   } else {
@@ -376,9 +424,8 @@ function switchView(name) {
   if (name === 'predict-runs') loadPredictRuns();
   if (name === 'predict-results') loadPredictResults();
   if (name === 'predict-models') loadPredictModelsPage();
+  if (name === 'liquid') renderLiquid();
   startHpcTimer(name);
-  document.body.classList.toggle('hpc-mode', name.startsWith('hpc-'));
-  document.body.classList.toggle('predict-mode', name.startsWith('predict-'));
   document.body.classList.toggle('tutorial-mode', name === 'tutorial');
   renderServiceStatus();
   if (name === 'tutorial') loadTutorial(state.tutorial.current || 'README.md').catch(err => toast(err.message, true));
@@ -1495,9 +1542,12 @@ function renderServiceStatus() {
       ok = !!state.hpc.online;
       label = ok ? '超算服务在线' : '超算服务离线';
     }
-  } else if (state.workspace === 'predict') {
+  } else if (state.area === 'predict') {
     ok = state.localOnline !== false;
     label = ok ? '预测服务在线' : '预测服务离线';
+  } else if (state.area === 'liquid') {
+    ok = state.localOnline !== false;
+    label = ok ? '配液服务在线' : '配液服务离线';
   } else {
     ok = state.localOnline !== false;
     label = ok ? '本地服务在线' : '本地服务离线';
@@ -2381,7 +2431,9 @@ function predictUpdateSummary() {
   const el = $('#predict-summary');
   if (!el) return;
   const m = predictCurrentModel();
-  const location = $('#predict-location') ? $('#predict-location').value : 'local';
+  const location = state.workspace === 'hpc' ? 'hpc' : 'local';
+  const locationSelect = $('#predict-location');
+  if (locationSelect) locationSelect.value = location;
   const saveRoot = $('#predict-save-root') ? $('#predict-save-root').value.trim() : '';
   const name = $('#predict-name') ? $('#predict-name').value.trim() : '';
   const echos = $('#predict-echos') ? $('#predict-echos').value : '';
@@ -2398,8 +2450,8 @@ function predictUpdateSummary() {
   el.innerHTML = rows.map(r => '<div class="row"><span>' + esc(r[0]) + '</span><b>' + esc(r[1]) + '</b></div>').join('');
   const note = $('#predict-location-note');
   if (note) note.textContent = location === 'hpc'
-    ? '超算预测执行器尚未接入；先在本地跑出最小成果，再接入 Slurm。'
-    : '本地执行器将使用本机 GPU；当前是框架，尚未启动推理。';
+    ? '当前是超算工作区；超算预测执行器尚未接入。左侧切回本地可先跑最小成果。'
+    : '当前是本地工作区：负责模型、配置和前端展示；推理执行器尚未接入。';
   const btn = $('#predict-create');
   if (btn) {
     btn.disabled = location === 'hpc';
@@ -2447,6 +2499,15 @@ function predictRenderRuns() {
   const empty = '<tr><td colspan="8" class="empty">还没有预测任务。</td></tr>';
   const recent = $('#predict-recent-table tbody');
   const all = $('#predict-runs-table tbody');
+  if (state.workspace === 'hpc') {
+    const hpcEmpty = '<tr><td colspan="8" class="empty">超算预测执行器待接入；请先在本地工作区创建配置。</td></tr>';
+    if (recent) recent.innerHTML = hpcEmpty;
+    if (all) all.innerHTML = hpcEmpty;
+    if ($('#predict-recent-hint')) $('#predict-recent-hint').textContent = '超算工作区 · 待接入';
+    if ($('#predict-runs-hint')) $('#predict-runs-hint').textContent = '超算工作区 · 待接入';
+    if ($('#predict-result-run')) $('#predict-result-run').innerHTML = '<option value="">超算预测待接入</option>';
+    return;
+  }
   if (recent) recent.innerHTML = runs.length ? runs.slice(0, 8).map(predictRunRow).join('') : empty;
   if (all) all.innerHTML = runs.length ? runs.map(predictRunRow).join('') : empty;
   const recentHint = $('#predict-recent-hint');
@@ -2463,6 +2524,7 @@ function predictRenderRuns() {
 }
 
 async function loadPredictRuns(silent) {
+  if (state.workspace === 'hpc') { predictRenderRuns(); return; }
   try {
     const d = await api('/api/predict/runs');
     state.predict.runs = d || [];
@@ -2554,6 +2616,13 @@ function predictShowResult(d) {
 }
 
 async function loadPredictResults() {
+  if (state.workspace === 'hpc') {
+    predictShowResult(null);
+    const summary = $('#predict-result-summary');
+    if (summary) summary.innerHTML = '<div class="empty">超算结果与转换接口待接入；请先在本地完成预测和 CIF 转换。</div>';
+    if ($('#predict-result-hint')) $('#predict-result-hint').textContent = '超算工作区 · 待接入';
+    return;
+  }
   if (!state.predict.runs.length) await loadPredictRuns(true);
   predictRenderRuns();
   const sel = $('#predict-result-run');
@@ -2603,8 +2672,8 @@ async function scanPredictCheckpoints() {
 }
 
 async function predictCreateRun() {
-  const location = $('#predict-location').value;
-  if (location === 'hpc') { toast('超算预测执行器尚未接入，请先选本地', true); return; }
+  const location = state.workspace === 'hpc' ? 'hpc' : 'local';
+  if (location === 'hpc') { toast('超算预测执行器尚未接入，请切回本地工作区', true); return; }
   const model = predictCurrentModel();
   if (!model) { predictSetStatus('请先选择预训练模型', true); return; }
   const saveRoot = $('#predict-save-root').value.trim();
@@ -2674,7 +2743,7 @@ function predictResetForm() {
   if ($('#predict-resume')) $('#predict-resume').checked = false;
   if ($('#predict-resume-box')) $('#predict-resume-box').classList.add('hidden');
   if ($('#predict-ckpt')) $('#predict-ckpt').innerHTML = '<option value="">先扫描目录</option>';
-  if ($('#predict-location')) $('#predict-location').value = 'local';
+  if ($('#predict-location')) $('#predict-location').value = state.workspace === 'hpc' ? 'hpc' : 'local';
   if ($('#predict-save-root')) $('#predict-save-root').value = (state.settings || {}).predict_work_root || '';
   predictSetStatus('');
   predictUpdateSummary();
@@ -2682,6 +2751,18 @@ function predictResetForm() {
 
 function predictPick(id, kind, title) {
   pickPath(kind, id, title);
+}
+
+function renderLiquid() {
+  const hpc = state.workspace === 'hpc';
+  const title = $('#liquid-title');
+  const hint = $('#liquid-hint');
+  const note = $('#liquid-note');
+  if (title) title.textContent = hpc ? '配液 · 超算工作区' : '配液 · 本地工作区';
+  if (hint) hint.textContent = hpc ? '大型或批量配液调度 · 待接入' : '配方展示与本地可行性检查 · 待接入';
+  if (note) note.textContent = hpc
+    ? '超算工作区只负责大型或大批量配液任务。当前保留页面位置和任务入口，尚未接入调度与设备接口。'
+    : '本地工作区负责配方选择、结果展示和前端可用性验证。当前是骨架，不生成配方，也不控制设备。';
 }
 
 function bind() {
@@ -2714,6 +2795,7 @@ function bind() {
   }, { passive: true });
   document.documentElement.addEventListener('mouseleave', () => { ambient.mouse.inside = false; });
   window.addEventListener('resize', () => { if (ambient.mode) ambient.resize(); });
+  $$('.project-btn').forEach(b => b.onclick = () => switchArea(b.dataset.area));
   $$('.workspace-btn').forEach(b => b.onclick = () => switchWorkspace(b.dataset.workspace));
   $$('.nav-item').forEach(b => b.onclick = () => switchView(b.dataset.view));
   $$('[data-jump]').forEach(b => b.onclick = () => switchView(b.dataset.jump));
@@ -2974,7 +3056,7 @@ async function boot() {
     await refreshJobs();
     await refreshResults();
     await loadTutorial('README.md');
-    switchWorkspace(state.workspace);
+    switchArea(state.area);
   } catch (e) {
     updateServer(false);
     toast('初始化失败：' + e.message, true);

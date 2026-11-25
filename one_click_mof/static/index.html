@@ -29,10 +29,16 @@
         <div class="brand-sub">local workbench</div>
       </div>
     </div>
+    <div class="switch-label">项目</div>
+    <div class="project-switch" id="project-switch">
+      <button type="button" class="project-btn" data-area="predict">预测</button>
+      <button type="button" class="project-btn active" data-area="calc">计算</button>
+      <button type="button" class="project-btn" data-area="liquid">配液</button>
+    </div>
+    <div class="switch-label">工作区</div>
     <div class="workspace-switch">
       <button type="button" class="workspace-btn active" data-workspace="local">本地</button>
       <button type="button" class="workspace-btn" data-workspace="hpc">超算</button>
-      <button type="button" class="workspace-btn" data-workspace="predict">预测</button>
     </div>
     <nav class="nav local-nav" id="local-nav">
       <button class="nav-item active" data-view="projects"><span>01</span> 项目与文件</button>
@@ -54,6 +60,9 @@
       <button class="nav-item" data-view="predict-runs"><span>02</span> 任务与保存点</button>
       <button class="nav-item" data-view="predict-results"><span>03</span> 结果与转换</button>
       <button class="nav-item" data-view="predict-models"><span>04</span> 模型与路径</button>
+    </nav>
+    <nav class="nav liquid-nav" id="liquid-nav">
+      <button class="nav-item" data-view="liquid"><span>01</span> 配液工作台</button>
     </nav>
     <div class="skin-picker">
       <button type="button" class="skin-toggle" id="skin-toggle" aria-expanded="false">
@@ -371,7 +380,7 @@
             <label>预训练模型<select id="predict-model"></select></label>
             <div class="predict-model-meta" id="predict-model-meta">尚未选择模型</div>
             <div class="form-row">
-              <label>运行位置<select id="predict-location">
+              <label>运行位置<select id="predict-location" disabled>
                 <option value="local">本地（先跑通）</option>
                 <option value="hpc">超算（待接入）</option>
               </select></label>
@@ -512,6 +521,21 @@
       <div class="card">
         <div class="card-head"><div><h2>发现的模型</h2><span class="hint" id="predict-model-count">—</span></div><button class="btn small ghost" id="predict-refresh-model-grid">刷新</button></div>
         <div id="predict-model-grid" class="predict-model-grid"><div class="empty">尚未扫描。</div></div>
+      </div>
+    </section>
+
+    <!-- 配液：工作台骨架 -->
+    <section class="view" id="view-liquid">
+      <div class="card">
+        <div class="card-head"><div><h2 id="liquid-title">配液工作台</h2><span class="hint" id="liquid-hint">本地/超算共用骨架</span></div></div>
+        <p class="muted" id="liquid-note">自动配液系统尚未接入。这里预留本地配方展示与超算批量调度两个工作区。</p>
+        <div class="predict-flow">
+          <div><b>1</b><span>选择配方 / 目标</span></div>
+          <div><b>2</b><span>本地可行性检查与前端展示</span></div>
+          <div><b>3</b><span>超算批量实验规划</span></div>
+          <div><b>4</b><span>结果回传到计算 / 预测</span></div>
+        </div>
+        <div class="notice">当前只搭页面位置，不生成配方、不控制任何设备。</div>
       </div>
     </section>
 

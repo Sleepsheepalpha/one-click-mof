@@ -741,6 +741,19 @@ html[data-skin="dynamic-day"] .sidebar { background: rgba(18, 51, 56, .86); -web
 /* -------------------------------------------------------------------------
    local / hpc workspace
    ------------------------------------------------------------------------- */
+.switch-label {
+  margin: 0 3px 4px; color: #668b86; font-size: 9.5px; letter-spacing: .8px; text-transform: uppercase;
+}
+.project-switch {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 0 2px 9px;
+}
+.project-btn {
+  appearance: none; border: 1px solid rgba(255,255,255,.08); border-radius: 8px;
+  background: rgba(255,255,255,.025); color: #93b0ac; font: inherit; font-size: 12px;
+  padding: 7px 4px; cursor: pointer;
+}
+.project-btn:hover { color: #d8e8e4; background: rgba(255,255,255,.07); }
+.project-btn.active { background: #1d474b; color: #fff; border-color: rgba(224,122,79,.35); }
 .workspace-switch {
   display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: 0 2px 12px;
   padding: 4px; border: 1px solid rgba(255,255,255,.10); border-radius: 10px;
@@ -752,9 +765,11 @@ html[data-skin="dynamic-day"] .sidebar { background: rgba(18, 51, 56, .86); -web
 }
 .workspace-btn:hover { color: #d8e8e4; background: rgba(255,255,255,.06); }
 .workspace-btn.active { background: #1d474b; color: #fff; box-shadow: inset 0 0 0 1px rgba(224,122,79,.32); }
-body.hpc-mode .local-nav { display: none; }
-body.hpc-mode .hpc-nav { display: flex; }
-body:not(.hpc-mode) .hpc-nav { display: none; }
+.local-nav, .hpc-nav, .predict-nav, .liquid-nav { display: none; }
+body.area-calc.workspace-local .local-nav { display: flex; }
+body.area-calc.workspace-hpc .hpc-nav { display: flex; }
+body.area-predict .predict-nav { display: flex; }
+body.area-liquid .liquid-nav { display: flex; }
 
 .hpc-login-wrap { max-width: 620px; margin: 0 auto; }
 .hpc-login-card { padding: 24px; }
@@ -838,13 +853,7 @@ body:not(.hpc-mode) .hpc-nav { display: none; }
 /* -------------------------------------------------------------------------
    prediction workspace
    ------------------------------------------------------------------------- */
-.predict-nav { display: none; }
-body.predict-mode .local-nav,
-body.predict-mode .hpc-nav { display: none; }
-body.predict-mode .predict-nav { display: flex; }
-body.hpc-mode .predict-nav { display: none; }
-.workspace-switch { grid-template-columns: repeat(3, 1fr); }
-.workspace-btn { padding: 6px 5px; font-size: 11px; }
+.predict-nav, .liquid-nav { display: none; }
 
 .predict-banner {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
